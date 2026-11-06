@@ -5,7 +5,7 @@ PowerShell reports for Microsoft Intune that show **which policies are assigned 
 | Script | Covers | Status |
 |---|---|---|
 | [`Get-IntuneConfigAssignments.ps1`](Get-IntuneConfigAssignments.ps1) | Configuration profiles | ✅ Available |
-| `Get-IntuneComplianceAssignments.ps1` | Compliance policies | 🛠️ Planned |
+| [`Get-IntuneComplianceAssignments.ps1`](#get-intunecomplianceassignmentsps1) | Compliance policies incl. actions for noncompliance | ✅ Available |
 
 > **Note:** Console output, CSV column names and inline help are in **German**. The CSV uses `;` as delimiter and UTF-8 with BOM, so it opens correctly in German Excel.
 
@@ -116,6 +116,52 @@ Disconnect-MgGraph
 - Only **direct** assignments are evaluated – nested group membership is not resolved. For the effective state of a single device use *Intune > Devices > [device] > Device configuration*.
 - Uses Graph **beta** endpoints (no complete v1.0 equivalent exists for Settings Catalog and ADMX policies).
 - Compliance policies, apps, scripts and remediations are not part of this script.
+
+---
+
+## Get-IntuneComplianceAssignments.ps1
+
+Same approach, parameters and output format as `Get-IntuneConfigAssignments.ps1`, plus the **actions for noncompliance** of every policy and the **tenant-wide compliance settings**.
+
+### What it covers
+
+| Policy type | Graph endpoint (beta) |
+|---|---|
+| Compliance policies (classic) | `/deviceManagement/deviceCompliancePolicies` |
+| Compliance policies (Settings Catalog based, e.g. Linux) | `/deviceManagement/compliancePolicies` |
+| Actions for noncompliance | `…/{id}/scheduledActionsForRule?$expand=scheduledActionConfigurations` |
+| Tenant-wide compliance settings | `/deviceManagement?$select=settings` |
+
+### Additional output
+
+- **Console:** tenant-wide settings
+  - *Mark devices with no compliance policy assigned as* (compliant / not compliant)
+  - *Compliance status validity period* (days)
+- **Column `NichtKonformNach`:** when a device is marked as noncompliant (`sofort`, `1 Tag`, `3 Tage`, …)
+- **Column `Aktionen`:** all actions for noncompliance in chronological order, including notification template and CC groups:
+  ```
+  Als nicht konform markieren: sofort | E-Mail an Endbenutzer: nach 1 Tag (Vorlage: Compliance notice; CC: GRP-IT-Helpdesk) | Gerät remote sperren: nach 3 Tagen
+  ```
+
+### Permissions
+
+Same as above (`DeviceManagementConfiguration.Read.All`, `Group.Read.All`).
+Optional: `DeviceManagementServiceConfig.Read.All` – needed to resolve **notification template names** and read the **tenant-wide settings**. Without it the report still runs; template IDs are shown instead of names and the tenant settings are skipped with a warning.
+
+### Usage
+
+```powershell
+.\Get-IntuneComplianceAssignments.ps1 -TenantId contoso.onmicrosoft.com
+.\Get-IntuneComplianceAssignments.ps1 -GroupName "GRP-Intune-Win-*" -IncludeTenantWide
+.\Get-IntuneComplianceAssignments.ps1 -IncludeUnassigned -OneRowPerAssignment
+```
+
+Default export path: `%TEMP%\Intune-ComplianceAssignments_<timestamp>.csv`
+
+### Limitations
+
+- The built-in *Default Device Compliance Policy* is not exposed via Graph and therefore not listed.
+- Only direct assignments are evaluated (no nested groups).
 
 ---
 
