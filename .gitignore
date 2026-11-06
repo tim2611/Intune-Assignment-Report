@@ -1,0 +1,8 @@
+# Report exports – may contain tenant data
+*.csv
+*.xlsx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

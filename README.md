@@ -1,0 +1,124 @@
+# Intune Assignment Report
+
+PowerShell reports for Microsoft Intune that show **which policies are assigned to which groups** – including include/exclude assignments, tenant-wide assignments and assignment filters – via Microsoft Graph.
+
+| Script | Covers | Status |
+|---|---|---|
+| [`Get-IntuneConfigAssignments.ps1`](Get-IntuneConfigAssignments.ps1) | Configuration profiles | ✅ Available |
+| `Get-IntuneComplianceAssignments.ps1` | Compliance policies | 🛠️ Planned |
+
+> **Note:** Console output, CSV column names and inline help are in **German**. The CSV uses `;` as delimiter and UTF-8 with BOM, so it opens correctly in German Excel.
+
+---
+
+## Get-IntuneConfigAssignments.ps1
+
+### What it covers
+
+| Policy type | Graph endpoint (beta) |
+|---|---|
+| Templates (classic device configurations) | `/deviceManagement/deviceConfigurations` |
+| Settings Catalog, Endpoint Security, Security Baselines | `/deviceManagement/configurationPolicies` |
+| Administrative Templates (ADMX) | `/deviceManagement/groupPolicyConfigurations` |
+| Endpoint Security (legacy intents) | `/deviceManagement/intents` |
+
+### Features
+
+- **One row per policy** – all assignments listed in the `Gruppe` column, include before exclude, filters inline:
+  ```
+  GRP-Win-Pilot | GRP-Win-Prod [Filter: Laptops only (include)] | Exclude: GRP-Win-Kiosk
+  ```
+- Optional **one row per assignment** (`-OneRowPerAssignment`) for pivot tables in Excel
+- Resolves group names and assignment filter names; flags **deleted groups and filters**
+- **"Which policies hit this group?"** via `-GroupName` (wildcards supported), optionally including policies assigned to *All devices* / *All users* (`-IncludeTenantWide`)
+- Finds **unassigned policies** (`-IncludeUnassigned`)
+- Group names and legacy intent assignments resolved via **JSON batching** (`$batch`) with retry on throttling (429/503/504)
+- **Fault-tolerant:** if one policy type cannot be read, the report still completes and is clearly marked as incomplete
+- Works with **delegated** and **app-only** authentication; `-TenantId` for multi-tenant admins
+
+### Requirements
+
+- PowerShell 5.1 or 7.x
+- Module `Microsoft.Graph.Authentication`
+  ```powershell
+  Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+  ```
+- Graph permissions (delegated or application):
+
+  | Permission | Also accepted |
+  |---|---|
+  | `DeviceManagementConfiguration.Read.All` | `DeviceManagementConfiguration.ReadWrite.All` |
+  | `Group.Read.All` | `Group.ReadWrite.All`, `Directory.Read.All` |
+
+### Usage
+
+```powershell
+# Full report (interactive sign-in if not connected)
+.\Get-IntuneConfigAssignments.ps1 -TenantId contoso.onmicrosoft.com
+
+# Which policies are assigned to these groups? Include tenant-wide assignments
+.\Get-IntuneConfigAssignments.ps1 -GroupName "GRP-Intune-Win-*" -IncludeTenantWide -GridView
+
+# Include policies without any assignment, custom export path
+.\Get-IntuneConfigAssignments.ps1 -IncludeUnassigned -ExportPath C:\Reports\assignments.csv
+
+# One row per assignment (raw data)
+.\Get-IntuneConfigAssignments.ps1 -OneRowPerAssignment
+
+# Use the objects in the pipeline
+$r = .\Get-IntuneConfigAssignments.ps1 -PassThru
+$r | Where-Object Zuweisungen -gt 1
+```
+
+#### App-only (automation)
+
+Connect before running the script – it reuses the existing connection and verifies the application permissions with test requests:
+
+```powershell
+Connect-MgGraph -TenantId <tenant> -ClientId <appId> -CertificateThumbprint <thumbprint>
+.\Get-IntuneConfigAssignments.ps1
+```
+
+#### Sign out
+
+```powershell
+Disconnect-MgGraph
+```
+
+### Parameters
+
+| Parameter | Description |
+|---|---|
+| `-TenantId` | Tenant ID or primary domain. Reconnects if the current session belongs to another tenant. |
+| `-GroupName` | Only policies with a direct assignment to a matching group (wildcards). Shows **all** assignments of these policies. Nested group membership is not resolved. |
+| `-IncludeTenantWide` | With `-GroupName`: also include policies assigned to *All devices* / *All users*. |
+| `-IncludeUnassigned` | Also list policies without assignments (no effect with `-GroupName`). |
+| `-OneRowPerAssignment` | One row per assignment instead of per policy, with separate columns for mode and filter. |
+| `-ExportPath` | CSV path. Default: `%TEMP%\Intune-ConfigAssignments_<timestamp>.csv`. Folder is created if missing. |
+| `-GridView` | Additionally show the result in `Out-GridView`. |
+| `-PassThru` | Return the result objects to the pipeline. |
+
+### Output columns (default mode)
+
+| Column | Content |
+|---|---|
+| `Richtlinie` | Policy name |
+| `Typ` | Policy type (Template, Settings Catalog, Endpoint Security / Baseline, Administrative Template, Legacy Intent) |
+| `Plattform` | Normalized platform (Windows, iOS, macOS, Android, Linux) |
+| `Detailtyp` | OData type, technologies or template family |
+| `Zuweisungen` | Number of assignments |
+| `Gruppe` | All assignments, separated by ` \| ` |
+| `GruppenIds` | Group IDs in the same order as `Gruppe` |
+| `RichtlinienId` | Policy ID |
+
+### Limitations
+
+- Only **direct** assignments are evaluated – nested group membership is not resolved. For the effective state of a single device use *Intune > Devices > [device] > Device configuration*.
+- Uses Graph **beta** endpoints (no complete v1.0 equivalent exists for Settings Catalog and ADMX policies).
+- Compliance policies, apps, scripts and remediations are not part of this script.
+
+---
+
+## Disclaimer
+
+The scripts are read-only and make no changes to your tenant. Nevertheless, test them in a non-production tenant first. Provided as-is, without warranty.
