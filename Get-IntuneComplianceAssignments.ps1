@@ -90,7 +90,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.0
+    Version:  1.1.1
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -320,14 +320,28 @@ foreach ($a in 'block', 'notification', 'pushNotification', 'remoteLock', 'retir
 #endregion
 
 #region Load tenant-wide settings, filters and notification templates
-try {
-    $dm = Invoke-MgGraphRequest -Method GET -Uri "$graphBeta/deviceManagement?`$select=settings"
-    $s  = $dm.settings
-    # Missing values are reported as "unknown" instead of being silently interpreted as "Compliant"
-    $noPolicyState = if     ($null -eq $s -or $null -eq $s.secureByDefault) { 'unknown (not returned)' }
-                     elseif ($s.secureByDefault)                            { 'Not compliant' }
-                     else                                                   { 'Compliant' }
-    $validity      = if ($null -eq $s -or $null -eq $s.deviceComplianceCheckinThresholdDays) { 'unknown (not returned)' }
+# Not every request shape returns the "settings" property (e.g. $select is ignored in some tenants),
+# so several variants are tried until one actually contains it
+$s = $null
+$settingsError = $null
+foreach ($uri in "$graphBeta/deviceManagement?`$select=settings",
+                 "$graphBeta/deviceManagement",
+                 'https://graph.microsoft.com/v1.0/deviceManagement') {
+    try {
+        $dm = Invoke-MgGraphRequest -Method GET -Uri $uri
+        if ($dm.settings) { $s = $dm.settings; break }
+    }
+    catch {
+        $settingsError = $_.Exception.Message
+    }
+}
+
+if ($s) {
+    # Missing single values are reported as "unknown" instead of being silently interpreted as "Compliant"
+    $noPolicyState = if     ($null -eq $s.secureByDefault) { 'unknown (not returned)' }
+                     elseif ($s.secureByDefault)           { 'Not compliant' }
+                     else                                  { 'Compliant' }
+    $validity      = if ($null -eq $s.deviceComplianceCheckinThresholdDays) { 'unknown (not returned)' }
                      else { "$($s.deviceComplianceCheckinThresholdDays) days" }
     Write-Host ""
     Write-Host "Tenant-wide compliance settings" -ForegroundColor Cyan
@@ -335,8 +349,9 @@ try {
     Write-Host "  Compliance status validity period:                  $validity"
     Write-Host ""
 }
-catch {
-    Write-Warning "Tenant-wide compliance settings not readable ($($_.Exception.Message)). May require DeviceManagementServiceConfig.Read.All."
+else {
+    $detail = if ($settingsError) { " ($settingsError)" } else { ' (property not returned by Graph)' }
+    Write-Warning "Tenant-wide compliance settings not readable$detail. May require DeviceManagementServiceConfig.Read.All."
 }
 
 $filterNames = @{}
@@ -369,7 +384,7 @@ foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/deviceComplia
         Platform    = Get-NormalizedPlatform $odata
         Id          = $p.id
         Assignments = @($p.assignments)
-        ActionsUrl  = "/deviceManagement/deviceCompliancePolicies/$($p.id)/scheduledActionsForRule?`$expand=scheduledActionConfigurations"
+        BasePath    = "/deviceManagement/deviceCompliancePolicies/$($p.id)"
         Actions     = $null
     })
 }
@@ -383,7 +398,7 @@ foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/compliancePol
         Platform    = Get-NormalizedPlatform $p.platforms
         Id          = $p.id
         Assignments = @($p.assignments)
-        ActionsUrl  = "/deviceManagement/compliancePolicies/$($p.id)/scheduledActionsForRule?`$expand=scheduledActionConfigurations"
+        BasePath    = "/deviceManagement/compliancePolicies/$($p.id)"
         Actions     = $null
     })
 }
@@ -392,27 +407,102 @@ Write-Host "Policies found: $($profiles.Count)" -ForegroundColor Cyan
 #endregion
 
 #region Load actions for noncompliance via batch
-if ($profiles.Count -gt 0) {
+# Graph does not accept every query shape for this relationship in every tenant (observed: HTTP 400
+# for the expanded list request). Three variants are tried in order, each only for the policies
+# that are still open:
+#   1. <policy>/scheduledActionsForRule?$expand=scheduledActionConfigurations
+#   2. <policy>?$expand=scheduledActionsForRule($expand=scheduledActionConfigurations)
+#   3. <policy>/scheduledActionsForRule, then <rule>/scheduledActionConfigurations per rule
+function Get-BatchError {
+    param($Response)
+    if (-not $Response) { return 'no response' }
+    $m = $Response.body.error.message
+    if ($m) { return "HTTP $($Response.status): $m" }
+    return "HTTP $($Response.status)"
+}
+
+$pending   = @($profiles)
+$lastError = @{}
+
+$variants = @(
+    @{ Url   = { param($p) "$($p.BasePath)/scheduledActionsForRule?`$expand=scheduledActionConfigurations" }
+       Rules = { param($b) @($b.value) } },
+    @{ Url   = { param($p) "$($p.BasePath)?`$expand=scheduledActionsForRule(`$expand=scheduledActionConfigurations)" }
+       Rules = { param($b) @($b.scheduledActionsForRule) } }
+)
+
+foreach ($v in $variants) {
+    if ($pending.Count -eq 0) { break }
+    $urls = @{}
+    foreach ($p in $pending) { $urls[$p.Id] = & $v.Url $p }
     try {
-        $actionResp = Invoke-GraphBatch -RelativeUrls @($profiles | ForEach-Object { $_.ActionsUrl }) -Version beta
+        $resp = Invoke-GraphBatch -RelativeUrls @($urls.Values) -Version beta
     }
     catch {
-        $msg = "Actions for noncompliance could not be loaded: $($_.Exception.Message)"
-        Write-Warning $msg; $loadErrors.Add($msg)
-        $actionResp = @{}
+        $err = $_.Exception.Message
+        foreach ($p in $pending) { $lastError[$p.Id] = $err }
+        continue
     }
-    foreach ($p in $profiles) {
-        $r = $actionResp[$p.ActionsUrl]
+    $still = foreach ($p in $pending) {
+        $r = $resp[$urls[$p.Id]]
         if ($r -and $r.status -eq 200) {
             # Collect all actions of all rules of a policy in one flat list
-            $p.Actions = @(foreach ($rule in @($r.body.value)) {
+            $p.Actions = @(foreach ($rule in (& $v.Rules $r.body)) {
                 foreach ($c in @($rule.scheduledActionConfigurations)) { if ($c) { $c } }
             })
         }
-        elseif ($r) {
-            $msg = "Policy '$($p.Name)': actions not readable (HTTP $($r.status))"
-            Write-Warning $msg; $loadErrors.Add($msg)
+        else {
+            $lastError[$p.Id] = Get-BatchError $r
+            $p
         }
+    }
+    $pending = @($still)
+}
+
+# Variant 3: rules first, then the configurations of every rule
+if ($pending.Count -gt 0) {
+    $ruleUrls = @{}
+    foreach ($p in $pending) { $ruleUrls[$p.Id] = "$($p.BasePath)/scheduledActionsForRule" }
+    try   { $ruleResp = Invoke-GraphBatch -RelativeUrls @($ruleUrls.Values) -Version beta }
+    catch { $ruleResp = @{}; $err = $_.Exception.Message; foreach ($p in $pending) { $lastError[$p.Id] = $err } }
+
+    $cfgUrlsByPolicy = @{}
+    foreach ($p in $pending) {
+        $r = $ruleResp[$ruleUrls[$p.Id]]
+        if ($r -and $r.status -eq 200) {
+            $cfgUrlsByPolicy[$p.Id] = @(@($r.body.value) | Where-Object { $_ } |
+                ForEach-Object { "$($p.BasePath)/scheduledActionsForRule/$($_.id)/scheduledActionConfigurations" })
+        }
+        elseif ($r) {
+            $lastError[$p.Id] = Get-BatchError $r
+        }
+    }
+
+    $allCfgUrls = @($cfgUrlsByPolicy.Values | ForEach-Object { $_ })
+    $cfgResp = @{}
+    if ($allCfgUrls.Count -gt 0) {
+        try   { $cfgResp = Invoke-GraphBatch -RelativeUrls $allCfgUrls -Version beta }
+        catch { $err = $_.Exception.Message; foreach ($id in $cfgUrlsByPolicy.Keys) { $lastError[$id] = $err } }
+    }
+
+    $still = foreach ($p in $pending) {
+        if (-not $cfgUrlsByPolicy.ContainsKey($p.Id)) { $p; continue }
+        $ok   = $true
+        $acts = foreach ($u in $cfgUrlsByPolicy[$p.Id]) {
+            $r = $cfgResp[$u]
+            if ($r -and $r.status -eq 200) { @($r.body.value) }
+            else { $ok = $false; $lastError[$p.Id] = Get-BatchError $r }
+        }
+        if ($ok) { $p.Actions = @($acts | Where-Object { $_ }) } else { $p }
+    }
+    $pending = @($still)
+}
+
+# Remaining failures: one warning per distinct error instead of one per policy
+if ($pending.Count -gt 0) {
+    foreach ($g in ($pending | Group-Object { $lastError[$_.Id] })) {
+        $msg = "Actions for noncompliance not readable for $($g.Count) policy(ies) [$($g.Name)]: $(@($g.Group | ForEach-Object { $_.Name }) -join ', ')"
+        Write-Warning $msg; $loadErrors.Add($msg)
     }
 }
 #endregion
