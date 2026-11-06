@@ -7,7 +7,7 @@ PowerShell reports for Microsoft Intune that show **which policies are assigned 
 | [`Get-IntuneConfigAssignments.ps1`](Get-IntuneConfigAssignments.ps1) | Configuration profiles | ✅ Available |
 | [`Get-IntuneComplianceAssignments.ps1`](#get-intunecomplianceassignmentsps1) | Compliance policies incl. actions for noncompliance | ✅ Available |
 
-> **Note:** Console output, CSV column names and inline help are in **German**. The CSV uses `;` as delimiter and UTF-8 with BOM, so it opens correctly in German Excel.
+> **CSV format:** UTF-8 with BOM, delimiter `;` by default (opens directly in Excel with German/European regional settings). Use `-Delimiter ','` for English regional settings.
 
 ---
 
@@ -24,7 +24,7 @@ PowerShell reports for Microsoft Intune that show **which policies are assigned 
 
 ### Features
 
-- **One row per policy** – all assignments listed in the `Gruppe` column, include before exclude, filters inline:
+- **One row per policy** – all assignments listed in the `AssignedGroups` column, include before exclude, filters inline:
   ```
   GRP-Win-Pilot | GRP-Win-Prod [Filter: Laptops only (include)] | Exclude: GRP-Win-Kiosk
   ```
@@ -67,7 +67,10 @@ PowerShell reports for Microsoft Intune that show **which policies are assigned 
 
 # Use the objects in the pipeline
 $r = .\Get-IntuneConfigAssignments.ps1 -PassThru
-$r | Where-Object Zuweisungen -gt 1
+$r | Where-Object AssignmentCount -gt 1
+
+# Comma-separated CSV (English regional settings)
+.\Get-IntuneConfigAssignments.ps1 -Delimiter ','
 ```
 
 #### App-only (automation)
@@ -95,6 +98,7 @@ Disconnect-MgGraph
 | `-IncludeUnassigned` | Also list policies without assignments (no effect with `-GroupName`). |
 | `-OneRowPerAssignment` | One row per assignment instead of per policy, with separate columns for mode and filter. |
 | `-ExportPath` | CSV path. Default: `%TEMP%\Intune-ConfigAssignments_<timestamp>.csv`. Folder is created if missing. |
+| `-Delimiter` | CSV delimiter: `;` (default), `,` or tab. |
 | `-GridView` | Additionally show the result in `Out-GridView`. |
 | `-PassThru` | Return the result objects to the pipeline. |
 
@@ -102,14 +106,16 @@ Disconnect-MgGraph
 
 | Column | Content |
 |---|---|
-| `Richtlinie` | Policy name |
-| `Typ` | Policy type (Template, Settings Catalog, Endpoint Security / Baseline, Administrative Template, Legacy Intent) |
-| `Plattform` | Normalized platform (Windows, iOS, macOS, Android, Linux) |
-| `Detailtyp` | OData type, technologies or template family |
-| `Zuweisungen` | Number of assignments |
-| `Gruppe` | All assignments, separated by ` \| ` |
-| `GruppenIds` | Group IDs in the same order as `Gruppe` |
-| `RichtlinienId` | Policy ID |
+| `Policy` | Policy name |
+| `Type` | Policy type (Template, Settings Catalog, Endpoint Security / Baseline, Administrative Template, Endpoint Security (legacy intent)) |
+| `Platform` | Normalized platform (Windows, iOS, macOS, Android, Linux) |
+| `DetailType` | OData type, technologies or template family |
+| `AssignmentCount` | Number of assignments (include, exclude, tenant-wide) |
+| `AssignedGroups` | All assignments, separated by ` \| ` |
+| `GroupIds` | Group IDs in the same order as `AssignedGroups` |
+| `PolicyId` | Policy ID |
+
+With `-OneRowPerAssignment` the columns are: `Policy`, `Type`, `Platform`, `DetailType`, `Mode` (Include/Exclude), `Scope` (Group/TenantWide/None/Unknown), `Group`, `Filter`, `FilterMode`, `GroupId`, `PolicyId`.
 
 ### Limitations
 
@@ -137,11 +143,12 @@ Same approach, parameters and output format as `Get-IntuneConfigAssignments.ps1`
 - **Console:** tenant-wide settings
   - *Mark devices with no compliance policy assigned as* (compliant / not compliant)
   - *Compliance status validity period* (days)
-- **Column `NichtKonformNach`:** when a device is marked as noncompliant (`sofort`, `1 Tag`, `3 Tage`, …)
-- **Column `Aktionen`:** all actions for noncompliance in chronological order, including notification template and CC groups:
+- **Column `NoncompliantAfter`:** when a device is marked as noncompliant (`immediately`, `1 day`, `3 days`, …)
+- **Column `Actions`:** all actions for noncompliance in chronological order, including notification template and CC groups:
   ```
-  Als nicht konform markieren: sofort | E-Mail an Endbenutzer: nach 1 Tag (Vorlage: Compliance notice; CC: GRP-IT-Helpdesk) | Gerät remote sperren: nach 3 Tagen
+  Mark device noncompliant: immediately | Send email to end user: after 1 day (Template: Compliance notice; CC: GRP-IT-Helpdesk) | Remotely lock the noncompliant device: after 3 days
   ```
+  The console table omits `Actions` for space reasons; it is included in the CSV, `-GridView` and `-PassThru`.
 
 ### Permissions
 

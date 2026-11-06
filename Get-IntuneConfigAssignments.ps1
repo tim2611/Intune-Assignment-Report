@@ -1,69 +1,73 @@
 ﻿<#
 .SYNOPSIS
-    Listet alle Intune-Gerätekonfigurationen inkl. Zuweisungen (Gruppe, Include/Exclude, Filter).
+    Lists all Intune configuration profiles including their assignments (group, include/exclude, filter).
 
 .DESCRIPTION
-    Erfasst folgende Profiltypen über Microsoft Graph (beta):
-      - Klassische Templates                         /deviceManagement/deviceConfigurations
-      - Settings Catalog / Endpoint Security (neu)   /deviceManagement/configurationPolicies
-      - Administrative Templates (ADMX)              /deviceManagement/groupPolicyConfigurations
-      - Endpoint Security (Legacy-Intents)           /deviceManagement/intents
+    Covers the following profile types via Microsoft Graph (beta):
+      - Templates (classic)                              /deviceManagement/deviceConfigurations
+      - Settings Catalog / Endpoint Security / Baselines /deviceManagement/configurationPolicies
+      - Administrative Templates (ADMX)                  /deviceManagement/groupPolicyConfigurations
+      - Endpoint Security (legacy intents)               /deviceManagement/intents
 
-    Fehler beim Laden einzelner Profiltypen brechen den Lauf nicht ab; sie werden als Warnung
-    gemeldet und am Ende zusammengefasst. Gruppennamen und Intent-Zuweisungen werden per
-    JSON-Batch ($batch, 20 Requests pro Aufruf, Retry bei HTTP 429) aufgelöst.
+    Errors while loading a single profile type do not abort the run; they are reported as warnings
+    and summarized at the end. Group names and intent assignments are resolved via JSON batching
+    ($batch, 20 requests per call, retry on HTTP 429/503/504).
 
-    Benötigte Berechtigungen (delegiert oder Application):
-      DeviceManagementConfiguration.Read.All (oder ReadWrite.All)
-      Group.Read.All (oder Group.ReadWrite.All / Directory.Read.All)
+    Required permissions (delegated or application):
+      DeviceManagementConfiguration.Read.All (or ReadWrite.All)
+      Group.Read.All (or Group.ReadWrite.All / Directory.Read.All)
 
-    Anmeldung:
-      Ohne bestehende Verbindung meldet sich das Skript interaktiv (delegiert) an.
-      Für App-Only (z. B. Automatisierung) vorher selbst verbinden, z. B.:
-        Connect-MgGraph -TenantId <Tenant> -ClientId <AppId> -CertificateThumbprint <Thumbprint>
-      Das Skript prüft die Application Permissions dann per Test-Request.
+    Sign-in:
+      Without an existing connection the script signs in interactively (delegated).
+      For app-only (e.g. automation) connect yourself beforehand, e.g.:
+        Connect-MgGraph -TenantId <tenant> -ClientId <appId> -CertificateThumbprint <thumbprint>
+      The script then verifies the application permissions with test requests.
+
+    Output format (default): ONE row per policy. All assignments are listed in the column
+    "AssignedGroups", separated by " | ", includes before excludes, filters inline, e.g.:
+      GRP-Win-Pilot | GRP-Win-Prod [Filter: Laptops only (include)] | Exclude: GRP-Win-Kiosk
+    The column "AssignmentCount" counts all assignments of the policy (include, exclude,
+    tenant-wide, unknown target type).
+    With -OneRowPerAssignment you get one row per assignment instead, with separate columns
+    for Mode, Filter and FilterMode.
 
 .PARAMETER TenantId
-    Optional: Tenant-ID oder primäre Domain. Erzwingt die Verbindung mit genau diesem Tenant
-    (wichtig bei Multi-Tenant-Admins / Gastkonten).
-
-    Ausgabeformat (Standard): EINE Zeile pro Richtlinie. Alle Zuweisungen stehen in der Spalte
-    "Gruppe", getrennt durch " | ", Include vor Exclude, z. B.:
-      GRP-Win-Pilot | GRP-Win-Prod [Filter: Nur Laptops (include)] | Exclude: GRP-Win-Kiosk
-    Filter stehen dabei inline hinter der jeweiligen Gruppe. Die Spalte "Zuweisungen" zählt alle
-    Zuweisungen der Richtlinie (Include, Exclude, tenantweit, unbekannter Zieltyp).
-    Mit -OneRowPerAssignment gibt es stattdessen eine Zeile pro Zuweisung mit eigenen Spalten
-    für Modus, Filter und FilterModus.
+    Optional: tenant ID or primary domain. Forces the connection to exactly this tenant
+    (important for multi-tenant admins / guest accounts).
 
 .PARAMETER GroupName
-    Optional: Beantwortet die Frage "Welche Richtlinien sind dieser Gruppe zugewiesen?".
-    Ausgegeben werden Richtlinien mit mindestens einer direkten Zuweisung an eine Gruppe, deren Name
-    dem Muster entspricht (Wildcards erlaubt; Include oder Exclude). Von diesen Richtlinien werden
-    immer ALLE Zuweisungen angezeigt (auch andere Gruppen, Excludes und tenantweite Zuweisungen).
-    Verschachtelte Mitgliedschaften werden nicht aufgelöst. Richtlinien ohne Zuweisung erscheinen
-    mit -GroupName grundsätzlich nicht.
+    Optional: answers the question "Which policies are assigned to this group?".
+    Returns policies with at least one direct assignment to a group whose name matches the pattern
+    (wildcards supported; include or exclude). For these policies ALL assignments are shown
+    (other groups, excludes and tenant-wide assignments as well).
+    Nested group membership is not resolved. Policies without assignments never appear
+    when -GroupName is used.
 
 .PARAMETER IncludeTenantWide
-    Nur mit -GroupName: zusätzlich alle Richtlinien ausgeben, die "Alle Geräte" oder "Alle Benutzer"
-    zugewiesen sind – auch ohne Treffer auf die Gruppe. Damit enthält der Report alles, was Mitglieder
-    der Gruppe über direkte UND tenantweite Zuweisungen erreichen kann (Excludes und Filter beachten).
+    Only with -GroupName: additionally return all policies assigned to "All devices" or "All users",
+    even without a match on the group. The report then contains everything members of the group can
+    receive via direct AND tenant-wide assignments (mind excludes and filters).
 
 .PARAMETER IncludeUnassigned
-    Auch Richtlinien ohne Zuweisung ausgeben. Hat mit -GroupName keine Wirkung.
-
-.PARAMETER ExportPath
-    Pfad der CSV-Datei (Semikolon-getrennt, UTF-8 mit BOM für Excel). Zielordner wird bei Bedarf angelegt.
-    Standard: %TEMP%\Intune-ConfigAssignments_<Zeitstempel>.csv
+    Also list policies without assignments. Has no effect with -GroupName.
 
 .PARAMETER OneRowPerAssignment
-    Eine Zeile pro Zuweisung statt pro Richtlinie (mit Spalten Modus, Filter, FilterModus) –
-    sinnvoll für Pivot-Auswertungen in Excel.
+    One row per assignment instead of one row per policy (with columns Mode, Filter, FilterMode) –
+    useful for pivot tables in Excel.
+
+.PARAMETER ExportPath
+    Path of the CSV file (UTF-8 with BOM). The target folder is created if missing.
+    Default: %TEMP%\Intune-ConfigAssignments_<timestamp>.csv
+
+.PARAMETER Delimiter
+    CSV delimiter. Default ';' (opens directly in Excel with German/European regional settings).
+    Use ',' for English regional settings.
 
 .PARAMETER GridView
-    Ergebnis zusätzlich in Out-GridView anzeigen.
+    Additionally show the result in Out-GridView.
 
 .PARAMETER PassThru
-    Ergebnisobjekte in die Pipeline ausgeben (statt nur Tabelle/CSV).
+    Return the result objects to the pipeline (instead of table/CSV only).
 
 .EXAMPLE
     .\Get-IntuneConfigAssignments.ps1 -TenantId contoso.onmicrosoft.com
@@ -72,15 +76,15 @@
 .EXAMPLE
     .\Get-IntuneConfigAssignments.ps1 -IncludeUnassigned -ExportPath C:\Reports\assignments.csv
 .EXAMPLE
-    $r = .\Get-IntuneConfigAssignments.ps1 -PassThru; $r | Where-Object Zuweisungen -gt 1
+    $r = .\Get-IntuneConfigAssignments.ps1 -PassThru; $r | Where-Object AssignmentCount -gt 1
 .EXAMPLE
-    .\Get-IntuneConfigAssignments.ps1 -OneRowPerAssignment
+    .\Get-IntuneConfigAssignments.ps1 -OneRowPerAssignment -Delimiter ','
 
 .NOTES
-    Autor:    Timo Schlappinger
-    Version:  1.0.0
-    Projekt:  https://github.com/tim2611/Intune-Assignment-Report
-    Benötigt: Modul Microsoft.Graph.Authentication, PowerShell 5.1 oder 7.x
+    Author:   Timo Schlappinger
+    Version:  1.1.0
+    Project:  https://github.com/tim2611/Intune-Assignment-Report
+    Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
 [CmdletBinding()]
 [OutputType([pscustomobject])]
@@ -90,6 +94,7 @@ param(
     [switch]$IncludeTenantWide,
     [switch]$IncludeUnassigned,
     [string]$ExportPath = (Join-Path $env:TEMP "Intune-ConfigAssignments_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"),
+    [ValidateSet(';', ',', "`t")][string]$Delimiter = ';',
     [switch]$OneRowPerAssignment,
     [switch]$GridView,
     [switch]$PassThru
@@ -97,15 +102,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $graphBeta  = 'https://graph.microsoft.com/beta'
+$emptyGuid  = '00000000-0000-0000-0000-000000000000'
 $loadErrors = [System.Collections.Generic.List[string]]::new()
 
-#region Verbindung & Berechtigungen
+#region Connection & permissions
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-    throw "Modul fehlt: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
+    throw "Module missing: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
 }
 Import-Module Microsoft.Graph.Authentication
 
-# Benötigte Berechtigung -> akzeptierte (gleich- oder höherwertige) Berechtigungen
+# Required permission -> accepted (equal or higher) permissions
 $scopeMap = [ordered]@{
     'DeviceManagementConfiguration.Read.All' = @('DeviceManagementConfiguration.Read.All', 'DeviceManagementConfiguration.ReadWrite.All')
     'Group.Read.All'                         = @('Group.Read.All', 'Group.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
@@ -114,7 +120,7 @@ $scopeMap = [ordered]@{
 function Get-MissingScopes {
     $ctx = Get-MgContext
     if (-not $ctx) { return @($scopeMap.Keys) }
-    # Normalisierung: falls Scopes als volle URL geliefert werden, nur den Kurznamen verwenden
+    # Normalization: if scopes are returned as full URLs, use the short name only
     $have = @($ctx.Scopes | ForEach-Object { ($_ -split '/')[-1] })
     $missing = foreach ($required in $scopeMap.Keys) {
         if (-not ($scopeMap[$required] | Where-Object { $_ -in $have })) { $required }
@@ -128,7 +134,7 @@ $wrongTenant = $ctx -and $TenantId -and ($ctx.TenantId -ne $TenantId)
 
 if ($isAppOnly) {
     if ($wrongTenant) {
-        throw "Bestehende App-Verbindung zeigt auf Tenant $($ctx.TenantId), nicht auf $TenantId. Bitte Disconnect-MgGraph und mit der passenden App-Registrierung neu verbinden."
+        throw "Existing app connection points to tenant $($ctx.TenantId), not $TenantId. Run Disconnect-MgGraph and reconnect with the matching app registration."
     }
 }
 elseif (-not $ctx -or $wrongTenant -or (Get-MissingScopes).Count -gt 0) {
@@ -139,7 +145,7 @@ elseif (-not $ctx -or $wrongTenant -or (Get-MissingScopes).Count -gt 0) {
 
 $ctx = Get-MgContext
 if ("$($ctx.AuthType)" -eq 'AppOnly') {
-    # Application Permissions sind im Context nicht zuverlässig sichtbar -> Funktionstest per Probe-Request
+    # Application permissions are not reliably visible in the context -> functional test via probe requests
     $probes = [ordered]@{
         'DeviceManagementConfiguration.Read.All' = "$graphBeta/deviceManagement/deviceConfigurations?`$top=1&`$select=id"
         'Group.Read.All'                         = 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id'
@@ -149,20 +155,20 @@ if ("$($ctx.AuthType)" -eq 'AppOnly') {
         catch { $perm }
     }
     if ($failed) {
-        throw "App-Registrierung fehlt (vermutlich) die Application Permission: $(@($failed) -join ', ') (inkl. Admin Consent)"
+        throw "App registration is (probably) missing the application permission: $(@($failed) -join ', ') (incl. admin consent)"
     }
 }
 else {
     $missing = Get-MissingScopes
     if ($missing.Count -gt 0) {
-        throw "Fehlende delegierte Berechtigungen: $($missing -join ', ')"
+        throw "Missing delegated permissions: $($missing -join ', ')"
     }
 }
 $identity = if ($ctx.Account) { $ctx.Account } else { $ctx.AppName }
-Write-Host "Verbunden mit Tenant $($ctx.TenantId) als $identity ($($ctx.AuthType))" -ForegroundColor Cyan
+Write-Host "Connected to tenant $($ctx.TenantId) as $identity ($($ctx.AuthType))" -ForegroundColor Cyan
 #endregion
 
-#region Hilfsfunktionen
+#region Helper functions
 function Get-GraphAll {
     param([Parameter(Mandatory)][string]$Uri)
     $items = [System.Collections.Generic.List[object]]::new()
@@ -180,7 +186,7 @@ function Get-GraphAllSafe {
         Get-GraphAll -Uri $Uri
     }
     catch {
-        $msg = "$Label konnte nicht geladen werden: $($_.Exception.Message)"
+        $msg = "$Label could not be loaded: $($_.Exception.Message)"
         Write-Warning $msg
         $script:loadErrors.Add($msg)
     }
@@ -188,10 +194,10 @@ function Get-GraphAllSafe {
 
 function Invoke-GraphBatch {
     <#
-      Führt GET-Requests per JSON-Batch aus (max. 20 pro Aufruf).
-      Einzelne 429/503/504-Antworten im Batch werden bis zu 3x mit Retry-After erneut versucht,
-      ebenso 5xx-/Transportfehler des Batch-POST selbst. Status 0 = Batch-POST nie erfolgreich.
-      Rückgabe: Hashtable relativeUrl -> Antwortobjekt (status, body).
+      Runs GET requests via JSON batching (max. 20 per call).
+      Single 429/503/504 responses inside a batch are retried up to 3 times honoring Retry-After,
+      as are 5xx/transport errors of the batch POST itself. Status 0 = batch POST never succeeded.
+      Returns: hashtable relativeUrl -> response object (status, body).
     #>
     param(
         [Parameter(Mandatory)][string[]]$RelativeUrls,
@@ -212,7 +218,7 @@ function Invoke-GraphBatch {
             }
             $body = @{ requests = @($requests) } | ConvertTo-Json -Depth 5 -Compress
 
-            # Batch-POST selbst absichern: 5xx/Transportfehler -> Retry, 4xx (z. B. 401/403) -> sofort abbrechen
+            # Protect the batch POST itself: 5xx/transport errors -> retry, 4xx (e.g. 401/403) -> abort immediately
             try {
                 $resp = Invoke-MgGraphRequest -Method POST -Uri $batchUri -Body $body -ContentType 'application/json'
             }
@@ -245,7 +251,7 @@ function Invoke-GraphBatch {
             if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds ([Math]::Max($wait, 5)) }
         }
 
-        # Nach allen Versuchen weiterhin offene Requests mit ihrer letzten Antwort (Status) übernehmen
+        # Requests still open after all attempts: keep their last response (status)
         foreach ($url in $pending) {
             $results[$url] = if ($lastResp.ContainsKey($url)) { $lastResp[$url] } else { @{ status = 0; body = $null } }
         }
@@ -255,7 +261,7 @@ function Invoke-GraphBatch {
 
 function Get-NormalizedPlatform {
     param([string]$Value)
-    if (-not $Value) { return 'Unbekannt' }
+    if (-not $Value) { return 'Unknown' }
     $mapped = foreach ($part in ($Value -split '\s*,\s*')) {
         switch -Regex ($part) {
             '^(windows|editionUpgrade|sharedPC)' { 'Windows'; break }
@@ -270,38 +276,38 @@ function Get-NormalizedPlatform {
 }
 #endregion
 
-#region Assignment Filters laden
+#region Load assignment filters
 $filterNames = @{}
-foreach ($f in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/assignmentFilters" -Label 'Assignment Filters')) {
+foreach ($f in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/assignmentFilters" -Label 'Assignment filters')) {
     $filterNames[$f.id] = $f.displayName
 }
 #endregion
 
-#region Profile laden
+#region Load profiles
 $profiles = [System.Collections.Generic.List[object]]::new()
 
-# Klassische Templates
+# Templates (classic)
 foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/deviceConfigurations?`$expand=assignments" -Label 'Templates (deviceConfigurations)')) {
     $odata = $p.'@odata.type' -replace '^#microsoft\.graph\.', ''
     $profiles.Add([pscustomobject]@{
-        Typ         = 'Template'
-        Detailtyp   = $odata
+        Type        = 'Template'
+        DetailType  = $odata
         Name        = $p.displayName
-        Plattform   = Get-NormalizedPlatform $odata
+        Platform    = Get-NormalizedPlatform $odata
         Id          = $p.id
         Assignments = @($p.assignments)
     })
 }
 
-# Settings Catalog + neue Endpoint-Security-Richtlinien + neue Security Baselines
+# Settings Catalog + new Endpoint Security policies + new Security Baselines
 foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/configurationPolicies?`$expand=assignments" -Label 'Settings Catalog (configurationPolicies)')) {
     $family = $p.templateReference.templateFamily
-    $typ = if ($family -and $family -ne 'none') { "Endpoint Security / Baseline" } else { 'Settings Catalog' }
+    $isTemplate = $family -and $family -ne 'none'
     $profiles.Add([pscustomobject]@{
-        Typ         = $typ
-        Detailtyp   = if ($family -and $family -ne 'none') { $family } else { @($p.technologies) -join ', ' }
+        Type        = if ($isTemplate) { 'Endpoint Security / Baseline' } else { 'Settings Catalog' }
+        DetailType  = if ($isTemplate) { $family } else { @($p.technologies) -join ', ' }
         Name        = $p.name
-        Plattform   = Get-NormalizedPlatform $p.platforms
+        Platform    = Get-NormalizedPlatform $p.platforms
         Id          = $p.id
         Assignments = @($p.assignments)
     })
@@ -310,184 +316,182 @@ foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/configuration
 # Administrative Templates (ADMX)
 foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/groupPolicyConfigurations?`$expand=assignments" -Label 'Administrative Templates (groupPolicyConfigurations)')) {
     $profiles.Add([pscustomobject]@{
-        Typ         = 'Administrative Template'
-        Detailtyp   = 'groupPolicyConfiguration'
+        Type        = 'Administrative Template'
+        DetailType  = 'groupPolicyConfiguration'
         Name        = $p.displayName
-        Plattform   = 'Windows'
+        Platform    = 'Windows'
         Id          = $p.id
         Assignments = @($p.assignments)
     })
 }
 
-# Endpoint Security Legacy-Intents (kein $expand möglich -> Zuweisungen per Batch)
-$intents = @(Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/intents" -Label 'Endpoint Security Legacy-Intents')
+# Endpoint Security legacy intents (no $expand possible -> assignments via batch)
+$intents = @(Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/intents" -Label 'Endpoint Security legacy intents')
 if ($intents.Count -gt 0) {
     $intentUrls = @($intents | ForEach-Object { "/deviceManagement/intents/$($_.id)/assignments" })
     try {
         $intentAssignments = Invoke-GraphBatch -RelativeUrls $intentUrls -Version beta
     }
     catch {
-        $msg = "Zuweisungen der Legacy-Intents konnten nicht geladen werden: $($_.Exception.Message)"
+        $msg = "Assignments of legacy intents could not be loaded: $($_.Exception.Message)"
         Write-Warning $msg; $loadErrors.Add($msg)
         $intentAssignments = @{}
     }
     foreach ($p in $intents) {
         $r = $intentAssignments["/deviceManagement/intents/$($p.id)/assignments"]
         if ($r -and $r.status -ne 200) {
-            $msg = "Intent '$($p.displayName)': Zuweisungen nicht lesbar (HTTP $($r.status))"
+            $msg = "Intent '$($p.displayName)': assignments not readable (HTTP $($r.status))"
             Write-Warning $msg; $loadErrors.Add($msg)
         }
         $profiles.Add([pscustomobject]@{
-            Typ         = 'Endpoint Security (Legacy-Intent)'
-            Detailtyp   = $p.templateId
+            Type        = 'Endpoint Security (legacy intent)'
+            DetailType  = $p.templateId
             Name        = $p.displayName
-            Plattform   = 'Windows'
+            Platform    = 'Windows'
             Id          = $p.id
             Assignments = if ($r -and $r.status -eq 200) { @($r.body.value) } else { @() }
         })
     }
 }
 
-Write-Host "Profile gefunden: $($profiles.Count)" -ForegroundColor Cyan
+Write-Host "Profiles found: $($profiles.Count)" -ForegroundColor Cyan
 #endregion
 
-#region Zuweisungen aufbereiten
-$emptyGuid = '00000000-0000-0000-0000-000000000000'
-
+#region Build assignment rows
 $rows = foreach ($p in $profiles) {
     $assignments = @($p.Assignments | Where-Object { $_ })
 
     if ($assignments.Count -eq 0) {
         [pscustomobject]@{
-            Richtlinie = $p.Name; Typ = $p.Typ; Plattform = $p.Plattform; Detailtyp = $p.Detailtyp
-            Modus = '-'; Bereich = 'Keine'; Gruppe = '<nicht zugewiesen>'
-            Filter = $null; FilterModus = $null; GruppenId = $null; RichtlinienId = $p.Id
+            Policy = $p.Name; Type = $p.Type; Platform = $p.Platform; DetailType = $p.DetailType
+            Mode = '-'; Scope = 'None'; Group = '<not assigned>'
+            Filter = $null; FilterMode = $null; GroupId = $null; PolicyId = $p.Id
         }
         continue
     }
 
     foreach ($a in $assignments) {
         $t = $a.target
-        $groupId = $null; $gruppe = $null; $bereich = 'Gruppe'
+        $groupId = $null; $group = $null; $scope = 'Group'
 
         switch ($t.'@odata.type') {
-            '#microsoft.graph.groupAssignmentTarget'            { $modus = 'Include'; $groupId = $t.groupId }
-            '#microsoft.graph.exclusionGroupAssignmentTarget'   { $modus = 'Exclude'; $groupId = $t.groupId }
-            '#microsoft.graph.allDevicesAssignmentTarget'       { $modus = 'Include'; $gruppe = 'Alle Geräte';   $bereich = 'Tenantweit' }
-            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $modus = 'Include'; $gruppe = 'Alle Benutzer'; $bereich = 'Tenantweit' }
-            default                                             { $modus = 'Unbekannt'; $gruppe = $t.'@odata.type'; $bereich = 'Unbekannt' }
+            '#microsoft.graph.groupAssignmentTarget'            { $mode = 'Include'; $groupId = $t.groupId }
+            '#microsoft.graph.exclusionGroupAssignmentTarget'   { $mode = 'Exclude'; $groupId = $t.groupId }
+            '#microsoft.graph.allDevicesAssignmentTarget'       { $mode = 'Include'; $group = 'All devices'; $scope = 'TenantWide' }
+            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $mode = 'Include'; $group = 'All users';   $scope = 'TenantWide' }
+            default                                             { $mode = 'Unknown'; $group = $t.'@odata.type'; $scope = 'Unknown' }
         }
 
         $filterId  = $t.deviceAndAppManagementAssignmentFilterId
         $hasFilter = $filterId -and $filterId -ne $emptyGuid
         $filter    = if (-not $hasFilter) { $null }
                      elseif ($filterNames.ContainsKey($filterId)) { $filterNames[$filterId] }
-                     else { "<Filter gelöscht/unbekannt: $filterId>" }
+                     else { "<filter deleted/unknown: $filterId>" }
 
         [pscustomobject]@{
-            Richtlinie    = $p.Name
-            Typ           = $p.Typ
-            Plattform     = $p.Plattform
-            Detailtyp     = $p.Detailtyp
-            Modus         = $modus
-            Bereich       = $bereich
-            Gruppe        = $gruppe
-            Filter        = $filter
-            FilterModus   = if ($hasFilter) { $t.deviceAndAppManagementAssignmentFilterType } else { $null }
-            GruppenId     = $groupId
-            RichtlinienId = $p.Id
+            Policy     = $p.Name
+            Type       = $p.Type
+            Platform   = $p.Platform
+            DetailType = $p.DetailType
+            Mode       = $mode
+            Scope      = $scope
+            Group      = $group
+            Filter     = $filter
+            FilterMode = if ($hasFilter) { $t.deviceAndAppManagementAssignmentFilterType } else { $null }
+            GroupId    = $groupId
+            PolicyId   = $p.Id
         }
     }
 }
 $rows = @($rows)
 #endregion
 
-#region Gruppennamen per Batch auflösen
-$groupIds = @($rows | Where-Object { $_.GruppenId } | Select-Object -ExpandProperty GruppenId -Unique)
+#region Resolve group names via batch
+$groupIds = @($rows | Where-Object { $_.GroupId } | Select-Object -ExpandProperty GroupId -Unique)
 if ($groupIds.Count -gt 0) {
     $groupUrls = @($groupIds | ForEach-Object { "/groups/$_`?`$select=id,displayName" })
     try {
         $groupResp = Invoke-GraphBatch -RelativeUrls $groupUrls -Version v1.0
     }
     catch {
-        $msg = "Gruppennamen konnten nicht aufgelöst werden: $($_.Exception.Message)"
+        $msg = "Group names could not be resolved: $($_.Exception.Message)"
         Write-Warning $msg; $loadErrors.Add($msg)
         $groupResp = @{}
     }
     $groupNames = @{}
     foreach ($id in $groupIds) {
         $r = $groupResp["/groups/$id`?`$select=id,displayName"]
-        $groupNames[$id] = if     (-not $r)            { "<nicht aufgelöst: $id>" }
+        $groupNames[$id] = if     (-not $r)            { "<not resolved: $id>" }
                            elseif ($r.status -eq 200)  { $r.body.displayName }
-                           elseif ($r.status -eq 404)  { "<Gruppe gelöscht: $id>" }
-                           else                        { "<Fehler HTTP $($r.status): $id>" }
+                           elseif ($r.status -eq 404)  { "<group deleted: $id>" }
+                           else                        { "<error HTTP $($r.status): $id>" }
     }
     foreach ($row in $rows) {
-        if ($row.GruppenId) { $row.Gruppe = $groupNames[$row.GruppenId] }
+        if ($row.GroupId) { $row.Group = $groupNames[$row.GroupId] }
     }
 }
 #endregion
 
-#region Filtern
+#region Filter
 $filtered = $rows
 if ($GroupName) {
-    # Richtlinien ermitteln, die mindestens eine passende Zuweisung haben ...
+    # Determine policies with at least one matching assignment ...
     $matchingIds = @($rows | Where-Object {
-        ($_.Bereich -eq 'Gruppe' -and $_.Gruppe -like $GroupName) -or
-        ($IncludeTenantWide -and $_.Bereich -eq 'Tenantweit')
-    } | Select-Object -ExpandProperty RichtlinienId -Unique)
-    # ... und von diesen ALLE Zuweisungen behalten (Gesamtbild inkl. Excludes)
-    $filtered = $rows | Where-Object { $_.RichtlinienId -in $matchingIds }
+        ($_.Scope -eq 'Group' -and $_.Group -like $GroupName) -or
+        ($IncludeTenantWide -and $_.Scope -eq 'TenantWide')
+    } | Select-Object -ExpandProperty PolicyId -Unique)
+    # ... and keep ALL assignments of these policies (full picture incl. excludes)
+    $filtered = $rows | Where-Object { $_.PolicyId -in $matchingIds }
 }
 elseif (-not $IncludeUnassigned) {
-    $filtered = $rows | Where-Object { $_.Bereich -ne 'Keine' }
+    $filtered = $rows | Where-Object { $_.Scope -ne 'None' }
 }
 $filtered = @($filtered)
 
-$modusOrder = @{ Expression = { switch ($_.Modus) { 'Include' { 0 } 'Exclude' { 1 } default { 2 } } } }
+$modeOrder = @{ Expression = { switch ($_.Mode) { 'Include' { 0 } 'Exclude' { 1 } default { 2 } } } }
 #endregion
 
-#region Ergebnis aufbauen
+#region Build result
 if ($OneRowPerAssignment) {
-    # Eine Zeile pro Zuweisung (Rohdaten, z. B. für Pivot-Auswertungen)
-    $result = @($filtered | Sort-Object Richtlinie, RichtlinienId, $modusOrder, Gruppe)
+    # One row per assignment (raw data, e.g. for pivot tables)
+    $result = @($filtered | Sort-Object Policy, PolicyId, $modeOrder, Group)
 }
 else {
-    # Eine Zeile pro Richtlinie, alle Zuweisungen in der Spalte "Gruppe" zusammengefasst
-    $result = @($filtered | Group-Object RichtlinienId | ForEach-Object {
-        $items = @($_.Group | Sort-Object $modusOrder, Gruppe)
+    # One row per policy, all assignments combined in the column "AssignedGroups"
+    $result = @($filtered | Group-Object PolicyId | ForEach-Object {
+        $items = @($_.Group | Sort-Object $modeOrder, Group)
         $first = $items[0]
 
         $labels = foreach ($i in $items) {
-            $label = if ($i.Modus -eq 'Exclude') { "Exclude: $($i.Gruppe)" } else { $i.Gruppe }
-            if ($i.Filter) { $label += " [Filter: $($i.Filter) ($($i.FilterModus))]" }
+            $label = if ($i.Mode -eq 'Exclude') { "Exclude: $($i.Group)" } else { $i.Group }
+            if ($i.Filter) { $label += " [Filter: $($i.Filter) ($($i.FilterMode))]" }
             $label
         }
 
         [pscustomobject]@{
-            Richtlinie    = $first.Richtlinie
-            Typ           = $first.Typ
-            Plattform     = $first.Plattform
-            Detailtyp     = $first.Detailtyp
-            Zuweisungen   = @($items | Where-Object { $_.Bereich -ne 'Keine' }).Count
-            Gruppe        = $labels -join ' | '
-            GruppenIds    = @($items | Where-Object { $_.GruppenId } | ForEach-Object { $_.GruppenId }) -join ' | '
-            RichtlinienId = $first.RichtlinienId
+            Policy          = $first.Policy
+            Type            = $first.Type
+            Platform        = $first.Platform
+            DetailType      = $first.DetailType
+            AssignmentCount = @($items | Where-Object { $_.Scope -ne 'None' }).Count
+            AssignedGroups  = $labels -join ' | '
+            GroupIds        = @($items | Where-Object { $_.GroupId } | ForEach-Object { $_.GroupId }) -join ' | '
+            PolicyId        = $first.PolicyId
         }
-    } | Sort-Object Richtlinie, RichtlinienId)
+    } | Sort-Object Policy, PolicyId)
 }
 #endregion
 
-#region Ausgabe
+#region Output
 if ($result.Count -eq 0) {
-    Write-Warning "Keine Zuweisungen gefunden, die den Kriterien entsprechen."
+    Write-Warning "No assignments found matching the criteria."
 }
 else {
     if ($OneRowPerAssignment) {
-        $result | Format-Table Richtlinie, Typ, Plattform, Modus, Gruppe, Filter, FilterModus -AutoSize -Wrap | Out-Host
+        $result | Format-Table Policy, Type, Platform, Mode, Group, Filter, FilterMode -AutoSize -Wrap | Out-Host
     }
     else {
-        $result | Format-Table Richtlinie, Typ, Plattform, Zuweisungen, Gruppe -AutoSize -Wrap | Out-Host
+        $result | Format-Table Policy, Type, Platform, AssignmentCount, AssignedGroups -AutoSize -Wrap | Out-Host
     }
 
     $exportDir = Split-Path -Path $ExportPath -Parent
@@ -495,14 +499,14 @@ else {
         New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
     }
     $encoding = if ($PSVersionTable.PSVersion.Major -ge 6) { 'utf8BOM' } else { 'UTF8' }
-    $result | Export-Csv -Path $ExportPath -Delimiter ';' -NoTypeInformation -Encoding $encoding
-    Write-Host "CSV exportiert: $ExportPath ($($result.Count) Zeilen)" -ForegroundColor Green
+    $result | Export-Csv -Path $ExportPath -Delimiter $Delimiter -NoTypeInformation -Encoding $encoding
+    Write-Host "CSV exported: $ExportPath ($($result.Count) rows)" -ForegroundColor Green
 
-    if ($GridView) { $result | Out-GridView -Title 'Intune Konfigurationsprofile – Zuweisungen' }
+    if ($GridView) { $result | Out-GridView -Title 'Intune configuration profiles – assignments' }
 }
 
 if ($loadErrors.Count -gt 0) {
-    Write-Warning "Der Report ist UNVOLLSTÄNDIG – $($loadErrors.Count) Fehler beim Laden:"
+    Write-Warning "The report is INCOMPLETE – $($loadErrors.Count) error(s) while loading:"
     $loadErrors | ForEach-Object { Write-Warning "  $_" }
 }
 

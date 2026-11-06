@@ -1,76 +1,81 @@
 ﻿<#
 .SYNOPSIS
-    Listet alle Intune-Compliance-Richtlinien inkl. Zuweisungen (Gruppe, Include/Exclude, Filter)
-    und Aktionen bei Nichtkonformität.
+    Lists all Intune compliance policies including their assignments (group, include/exclude, filter)
+    and actions for noncompliance.
 
 .DESCRIPTION
-    Erfasst folgende Richtlinientypen über Microsoft Graph (beta):
-      - Compliance-Richtlinien (klassisch)          /deviceManagement/deviceCompliancePolicies
-      - Compliance-Richtlinien (Settings Catalog)   /deviceManagement/compliancePolicies   (z. B. Linux)
+    Covers the following policy types via Microsoft Graph (beta):
+      - Compliance policies (classic)                 /deviceManagement/deviceCompliancePolicies
+      - Compliance policies (Settings Catalog based)  /deviceManagement/compliancePolicies   (e.g. Linux)
 
-    Pro Richtlinie werden zusätzlich die Aktionen bei Nichtkonformität ausgegeben
-    (z. B. als nicht konform markieren, E-Mail, Gerät sperren, Außerbetriebnahme) inkl. Zeitpunkt,
-    Benachrichtigungsvorlage und CC-Gruppen. Außerdem zeigt das Skript die tenantweiten
-    Compliance-Einstellungen an ("Geräte ohne zugewiesene Compliance-Richtlinie als ..." und
-    Gültigkeitszeitraum des Compliance-Status).
+    For every policy the actions for noncompliance are returned as well (e.g. mark device
+    noncompliant, send email, remote lock, add to retire list) incl. timing, notification template
+    and CC groups. In addition, the script shows the tenant-wide compliance settings
+    ("Mark devices with no compliance policy assigned as ..." and the compliance status validity period).
 
-    Fehler beim Laden einzelner Richtlinientypen brechen den Lauf nicht ab; sie werden als Warnung
-    gemeldet und am Ende zusammengefasst. Gruppennamen und Aktionen werden per JSON-Batch
-    ($batch, 20 Requests pro Aufruf, Retry bei HTTP 429/503/504) aufgelöst.
+    Errors while loading a single policy type do not abort the run; they are reported as warnings
+    and summarized at the end. Group names and actions are resolved via JSON batching
+    ($batch, 20 requests per call, retry on HTTP 429/503/504).
 
-    Benötigte Berechtigungen (delegiert oder Application):
-      DeviceManagementConfiguration.Read.All (oder ReadWrite.All)
-      Group.Read.All (oder Group.ReadWrite.All / Directory.Read.All)
-    Optional (nur für Namen der Benachrichtigungsvorlagen und Tenant-Einstellungen):
-      DeviceManagementServiceConfig.Read.All – fehlt sie, werden Vorlagen-IDs angezeigt.
+    Required permissions (delegated or application):
+      DeviceManagementConfiguration.Read.All (or ReadWrite.All)
+      Group.Read.All (or Group.ReadWrite.All / Directory.Read.All)
+    Optional (only for notification template names and tenant-wide settings):
+      DeviceManagementServiceConfig.Read.All – if missing, template IDs are shown instead of names
+      and the tenant-wide settings are skipped with a warning. The report is NOT marked incomplete.
 
-    Anmeldung:
-      Ohne bestehende Verbindung meldet sich das Skript interaktiv (delegiert) an.
-      Für App-Only (z. B. Automatisierung) vorher selbst verbinden, z. B.:
-        Connect-MgGraph -TenantId <Tenant> -ClientId <AppId> -CertificateThumbprint <Thumbprint>
-      Das Skript prüft die Application Permissions dann per Test-Request.
+    Sign-in:
+      Without an existing connection the script signs in interactively (delegated).
+      For app-only (e.g. automation) connect yourself beforehand, e.g.:
+        Connect-MgGraph -TenantId <tenant> -ClientId <appId> -CertificateThumbprint <thumbprint>
+      The script then verifies the application permissions with test requests.
 
-    Ausgabeformat (Standard): EINE Zeile pro Richtlinie. Alle Zuweisungen stehen in der Spalte
-    "Gruppe", getrennt durch " | ", Include vor Exclude, Filter inline, z. B.:
-      GRP-Win-Pilot | GRP-Win-Prod [Filter: Nur Laptops (include)] | Exclude: GRP-Win-Kiosk
-    Die Spalte "Aktionen" enthält alle Aktionen bei Nichtkonformität, chronologisch, z. B.:
-      Als nicht konform markieren: sofort | E-Mail an Endbenutzer: nach 1 Tag (Vorlage: Hinweis) | ...
-    Die Spalte "NichtKonformNach" zeigt separat, wann ein Gerät als nicht konform markiert wird.
-    Mit -OneRowPerAssignment gibt es stattdessen eine Zeile pro Zuweisung mit eigenen Spalten
-    für Modus, Filter und FilterModus.
+    Output format (default): ONE row per policy. All assignments are listed in the column
+    "AssignedGroups", separated by " | ", includes before excludes, filters inline, e.g.:
+      GRP-Win-Pilot | GRP-Win-Prod [Filter: Laptops only (include)] | Exclude: GRP-Win-Kiosk
+    The column "Actions" contains all actions for noncompliance in chronological order, e.g.:
+      Mark device noncompliant: immediately | Send email to end user: after 1 day (Template: Notice) | ...
+    The column "NoncompliantAfter" shows separately when a device is marked as noncompliant.
+    The console table omits "Actions" for space reasons – it is included in CSV, GridView and -PassThru.
+    With -OneRowPerAssignment you get one row per assignment instead, with separate columns
+    for Mode, Filter and FilterMode.
 
 .PARAMETER TenantId
-    Optional: Tenant-ID oder primäre Domain. Erzwingt die Verbindung mit genau diesem Tenant
-    (wichtig bei Multi-Tenant-Admins / Gastkonten).
+    Optional: tenant ID or primary domain. Forces the connection to exactly this tenant
+    (important for multi-tenant admins / guest accounts).
 
 .PARAMETER GroupName
-    Optional: Beantwortet die Frage "Welche Compliance-Richtlinien sind dieser Gruppe zugewiesen?".
-    Ausgegeben werden Richtlinien mit mindestens einer direkten Zuweisung an eine Gruppe, deren Name
-    dem Muster entspricht (Wildcards erlaubt; Include oder Exclude). Von diesen Richtlinien werden
-    immer ALLE Zuweisungen angezeigt (auch andere Gruppen, Excludes und tenantweite Zuweisungen).
-    Verschachtelte Mitgliedschaften werden nicht aufgelöst. Richtlinien ohne Zuweisung erscheinen
-    mit -GroupName grundsätzlich nicht.
+    Optional: answers the question "Which compliance policies are assigned to this group?".
+    Returns policies with at least one direct assignment to a group whose name matches the pattern
+    (wildcards supported; include or exclude). For these policies ALL assignments are shown
+    (other groups, excludes and tenant-wide assignments as well).
+    Nested group membership is not resolved. Policies without assignments never appear
+    when -GroupName is used.
 
 .PARAMETER IncludeTenantWide
-    Nur mit -GroupName: zusätzlich alle Richtlinien ausgeben, die "Alle Geräte" oder "Alle Benutzer"
-    zugewiesen sind – auch ohne Treffer auf die Gruppe.
+    Only with -GroupName: additionally return all policies assigned to "All devices" or "All users",
+    even without a match on the group.
 
 .PARAMETER IncludeUnassigned
-    Auch Richtlinien ohne Zuweisung ausgeben. Hat mit -GroupName keine Wirkung.
+    Also list policies without assignments. Has no effect with -GroupName.
 
 .PARAMETER OneRowPerAssignment
-    Eine Zeile pro Zuweisung statt pro Richtlinie (mit Spalten Modus, Filter, FilterModus) –
-    sinnvoll für Pivot-Auswertungen in Excel.
+    One row per assignment instead of one row per policy (with columns Mode, Filter, FilterMode) –
+    useful for pivot tables in Excel.
 
 .PARAMETER ExportPath
-    Pfad der CSV-Datei (Semikolon-getrennt, UTF-8 mit BOM für Excel). Zielordner wird bei Bedarf angelegt.
-    Standard: %TEMP%\Intune-ComplianceAssignments_<Zeitstempel>.csv
+    Path of the CSV file (UTF-8 with BOM). The target folder is created if missing.
+    Default: %TEMP%\Intune-ComplianceAssignments_<timestamp>.csv
+
+.PARAMETER Delimiter
+    CSV delimiter. Default ';' (opens directly in Excel with German/European regional settings).
+    Use ',' for English regional settings.
 
 .PARAMETER GridView
-    Ergebnis zusätzlich in Out-GridView anzeigen.
+    Additionally show the result in Out-GridView.
 
 .PARAMETER PassThru
-    Ergebnisobjekte in die Pipeline ausgeben (statt nur Tabelle/CSV).
+    Return the result objects to the pipeline (instead of table/CSV only).
 
 .EXAMPLE
     .\Get-IntuneComplianceAssignments.ps1 -TenantId contoso.onmicrosoft.com
@@ -79,15 +84,15 @@
 .EXAMPLE
     .\Get-IntuneComplianceAssignments.ps1 -IncludeUnassigned -ExportPath C:\Reports\compliance.csv
 .EXAMPLE
-    $r = .\Get-IntuneComplianceAssignments.ps1 -PassThru; $r | Where-Object NichtKonformNach -ne 'sofort'
+    $r = .\Get-IntuneComplianceAssignments.ps1 -PassThru; $r | Where-Object NoncompliantAfter -ne 'immediately'
 .EXAMPLE
-    .\Get-IntuneComplianceAssignments.ps1 -OneRowPerAssignment
+    .\Get-IntuneComplianceAssignments.ps1 -OneRowPerAssignment -Delimiter ','
 
 .NOTES
-    Autor:    Timo Schlappinger
-    Version:  1.0.0
-    Projekt:  https://github.com/tim2611/Intune-Assignment-Report
-    Benötigt: Modul Microsoft.Graph.Authentication, PowerShell 5.1 oder 7.x
+    Author:   Timo Schlappinger
+    Version:  1.1.0
+    Project:  https://github.com/tim2611/Intune-Assignment-Report
+    Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
 [CmdletBinding()]
 [OutputType([pscustomobject])]
@@ -97,6 +102,7 @@ param(
     [switch]$IncludeTenantWide,
     [switch]$IncludeUnassigned,
     [string]$ExportPath = (Join-Path $env:TEMP "Intune-ComplianceAssignments_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"),
+    [ValidateSet(';', ',', "`t")][string]$Delimiter = ';',
     [switch]$OneRowPerAssignment,
     [switch]$GridView,
     [switch]$PassThru
@@ -107,13 +113,13 @@ $graphBeta  = 'https://graph.microsoft.com/beta'
 $emptyGuid  = '00000000-0000-0000-0000-000000000000'
 $loadErrors = [System.Collections.Generic.List[string]]::new()
 
-#region Verbindung & Berechtigungen
+#region Connection & permissions
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-    throw "Modul fehlt: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
+    throw "Module missing: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
 }
 Import-Module Microsoft.Graph.Authentication
 
-# Benötigte Berechtigung -> akzeptierte (gleich- oder höherwertige) Berechtigungen
+# Required permission -> accepted (equal or higher) permissions
 $scopeMap = [ordered]@{
     'DeviceManagementConfiguration.Read.All' = @('DeviceManagementConfiguration.Read.All', 'DeviceManagementConfiguration.ReadWrite.All')
     'Group.Read.All'                         = @('Group.Read.All', 'Group.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
@@ -122,7 +128,7 @@ $scopeMap = [ordered]@{
 function Get-MissingScopes {
     $ctx = Get-MgContext
     if (-not $ctx) { return @($scopeMap.Keys) }
-    # Normalisierung: falls Scopes als volle URL geliefert werden, nur den Kurznamen verwenden
+    # Normalization: if scopes are returned as full URLs, use the short name only
     $have = @($ctx.Scopes | ForEach-Object { ($_ -split '/')[-1] })
     $missing = foreach ($required in $scopeMap.Keys) {
         if (-not ($scopeMap[$required] | Where-Object { $_ -in $have })) { $required }
@@ -136,7 +142,7 @@ $wrongTenant = $ctx -and $TenantId -and ($ctx.TenantId -ne $TenantId)
 
 if ($isAppOnly) {
     if ($wrongTenant) {
-        throw "Bestehende App-Verbindung zeigt auf Tenant $($ctx.TenantId), nicht auf $TenantId. Bitte Disconnect-MgGraph und mit der passenden App-Registrierung neu verbinden."
+        throw "Existing app connection points to tenant $($ctx.TenantId), not $TenantId. Run Disconnect-MgGraph and reconnect with the matching app registration."
     }
 }
 elseif (-not $ctx -or $wrongTenant -or (Get-MissingScopes).Count -gt 0) {
@@ -147,7 +153,7 @@ elseif (-not $ctx -or $wrongTenant -or (Get-MissingScopes).Count -gt 0) {
 
 $ctx = Get-MgContext
 if ("$($ctx.AuthType)" -eq 'AppOnly') {
-    # Application Permissions sind im Context nicht zuverlässig sichtbar -> Funktionstest per Probe-Request
+    # Application permissions are not reliably visible in the context -> functional test via probe requests
     $probes = [ordered]@{
         'DeviceManagementConfiguration.Read.All' = "$graphBeta/deviceManagement/deviceCompliancePolicies?`$top=1&`$select=id"
         'Group.Read.All'                         = 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id'
@@ -157,20 +163,20 @@ if ("$($ctx.AuthType)" -eq 'AppOnly') {
         catch { $perm }
     }
     if ($failed) {
-        throw "App-Registrierung fehlt (vermutlich) die Application Permission: $(@($failed) -join ', ') (inkl. Admin Consent)"
+        throw "App registration is (probably) missing the application permission: $(@($failed) -join ', ') (incl. admin consent)"
     }
 }
 else {
     $missing = Get-MissingScopes
     if ($missing.Count -gt 0) {
-        throw "Fehlende delegierte Berechtigungen: $($missing -join ', ')"
+        throw "Missing delegated permissions: $($missing -join ', ')"
     }
 }
 $identity = if ($ctx.Account) { $ctx.Account } else { $ctx.AppName }
-Write-Host "Verbunden mit Tenant $($ctx.TenantId) als $identity ($($ctx.AuthType))" -ForegroundColor Cyan
+Write-Host "Connected to tenant $($ctx.TenantId) as $identity ($($ctx.AuthType))" -ForegroundColor Cyan
 #endregion
 
-#region Hilfsfunktionen
+#region Helper functions
 function Get-GraphAll {
     param([Parameter(Mandatory)][string]$Uri)
     $items = [System.Collections.Generic.List[object]]::new()
@@ -188,7 +194,7 @@ function Get-GraphAllSafe {
         Get-GraphAll -Uri $Uri
     }
     catch {
-        $msg = "$Label konnte nicht geladen werden: $($_.Exception.Message)"
+        $msg = "$Label could not be loaded: $($_.Exception.Message)"
         Write-Warning $msg
         $script:loadErrors.Add($msg)
     }
@@ -196,10 +202,10 @@ function Get-GraphAllSafe {
 
 function Invoke-GraphBatch {
     <#
-      Führt GET-Requests per JSON-Batch aus (max. 20 pro Aufruf).
-      Einzelne 429/503/504-Antworten im Batch werden bis zu 3x mit Retry-After erneut versucht,
-      ebenso 5xx-/Transportfehler des Batch-POST selbst. Status 0 = Batch-POST nie erfolgreich.
-      Rückgabe: Hashtable relativeUrl -> Antwortobjekt (status, body).
+      Runs GET requests via JSON batching (max. 20 per call).
+      Single 429/503/504 responses inside a batch are retried up to 3 times honoring Retry-After,
+      as are 5xx/transport errors of the batch POST itself. Status 0 = batch POST never succeeded.
+      Returns: hashtable relativeUrl -> response object (status, body).
     #>
     param(
         [Parameter(Mandatory)][string[]]$RelativeUrls,
@@ -220,7 +226,7 @@ function Invoke-GraphBatch {
             }
             $body = @{ requests = @($requests) } | ConvertTo-Json -Depth 5 -Compress
 
-            # Batch-POST selbst absichern: 5xx/Transportfehler -> Retry, 4xx (z. B. 401/403) -> sofort abbrechen
+            # Protect the batch POST itself: 5xx/transport errors -> retry, 4xx (e.g. 401/403) -> abort immediately
             try {
                 $resp = Invoke-MgGraphRequest -Method POST -Uri $batchUri -Body $body -ContentType 'application/json'
             }
@@ -253,7 +259,7 @@ function Invoke-GraphBatch {
             if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds ([Math]::Max($wait, 5)) }
         }
 
-        # Nach allen Versuchen weiterhin offene Requests mit ihrer letzten Antwort (Status) übernehmen
+        # Requests still open after all attempts: keep their last response (status)
         foreach ($url in $pending) {
             $results[$url] = if ($lastResp.ContainsKey($url)) { $lastResp[$url] } else { @{ status = 0; body = $null } }
         }
@@ -263,7 +269,7 @@ function Invoke-GraphBatch {
 
 function Get-NormalizedPlatform {
     param([string]$Value)
-    if (-not $Value) { return 'Unbekannt' }
+    if (-not $Value) { return 'Unknown' }
     $mapped = foreach ($part in ($Value -split '\s*,\s*')) {
         switch -Regex ($part) {
             '^windows'        { 'Windows'; break }
@@ -278,53 +284,67 @@ function Get-NormalizedPlatform {
 }
 
 function Format-GracePeriod {
-    # Standard: "nach 3 Tagen" (für die Aktionsliste); -Short: "3 Tage" (für die Spalte NichtKonformNach)
+    # Default: "after 3 days" (for the action list); -Short: "3 days" (for the column NoncompliantAfter)
     param($Hours, [switch]$Short)
     $h = [int]$Hours
-    if ($h -le 0) { return 'sofort' }
+    if ($h -le 0) { return 'immediately' }
     if ($h % 24 -ne 0) {
-        if ($Short) { return "$h Std." } else { return "nach $h Std." }
+        $text = if ($h -eq 1) { '1 hour' } else { "$h hours" }
     }
-    $d = $h / 24
-    if ($Short) { if ($d -eq 1) { return '1 Tag' } else { return "$d Tage" } }
-    if ($d -eq 1) { return 'nach 1 Tag' }
-    return "nach $d Tagen"
+    else {
+        $d    = $h / 24
+        $text = if ($d -eq 1) { '1 day' } else { "$d days" }
+    }
+    if ($Short) { return $text }
+    return "after $text"
 }
 
-# Anzeigenamen der Aktionen (wie im Intune-Portal)
+# Display names of the actions (as in the Intune admin center)
 $actionLabels = @{
-    'block'                        = 'Als nicht konform markieren'
-    'notification'                 = 'E-Mail an Endbenutzer'
-    'pushNotification'             = 'Push-Benachrichtigung an Endbenutzer'
-    'remoteLock'                   = 'Gerät remote sperren'
-    'retire'                       = 'Gerät zur Außerbetriebnahme-Liste hinzufügen'
-    'wipe'                         = 'Gerät zurücksetzen (Wipe)'
-    'removeResourceAccessProfiles' = 'Ressourcenzugriffsprofile entfernen'
-    'noAction'                     = 'Keine Aktion'
+    'block'                        = 'Mark device noncompliant'
+    'notification'                 = 'Send email to end user'
+    'pushNotification'             = 'Send push notification to end user'
+    'remoteLock'                   = 'Remotely lock the noncompliant device'
+    'retire'                       = 'Add device to retire list'
+    'wipe'                         = 'Wipe device'
+    'removeResourceAccessProfiles' = 'Remove resource access profiles'
+    'noAction'                     = 'No action'
 }
-$actionOrder = @('block', 'notification', 'pushNotification', 'remoteLock', 'retire', 'wipe', 'removeResourceAccessProfiles', 'noAction')
+
+# Order for actions with the same timing (hashtable keys are case-insensitive)
+$actionRank = @{}
+$rank = 0
+foreach ($a in 'block', 'notification', 'pushNotification', 'remoteLock', 'retire', 'wipe', 'removeResourceAccessProfiles', 'noAction') {
+    $actionRank[$a] = $rank++
+}
 #endregion
 
-#region Tenant-Einstellungen, Filter und Benachrichtigungsvorlagen laden
+#region Load tenant-wide settings, filters and notification templates
 try {
     $dm = Invoke-MgGraphRequest -Method GET -Uri "$graphBeta/deviceManagement?`$select=settings"
-    $noPolicyState = if ($dm.settings.secureByDefault) { 'Nicht konform' } else { 'Konform' }
+    $s  = $dm.settings
+    # Missing values are reported as "unknown" instead of being silently interpreted as "Compliant"
+    $noPolicyState = if     ($null -eq $s -or $null -eq $s.secureByDefault) { 'unknown (not returned)' }
+                     elseif ($s.secureByDefault)                            { 'Not compliant' }
+                     else                                                   { 'Compliant' }
+    $validity      = if ($null -eq $s -or $null -eq $s.deviceComplianceCheckinThresholdDays) { 'unknown (not returned)' }
+                     else { "$($s.deviceComplianceCheckinThresholdDays) days" }
     Write-Host ""
-    Write-Host "Tenantweite Compliance-Einstellungen" -ForegroundColor Cyan
-    Write-Host "  Geräte ohne zugewiesene Compliance-Richtlinie gelten als: $noPolicyState"
-    Write-Host "  Gültigkeitszeitraum des Compliance-Status:                $($dm.settings.deviceComplianceCheckinThresholdDays) Tage"
+    Write-Host "Tenant-wide compliance settings" -ForegroundColor Cyan
+    Write-Host "  Mark devices with no compliance policy assigned as: $noPolicyState"
+    Write-Host "  Compliance status validity period:                  $validity"
     Write-Host ""
 }
 catch {
-    Write-Warning "Tenantweite Compliance-Einstellungen nicht lesbar ($($_.Exception.Message)). Benötigt ggf. DeviceManagementServiceConfig.Read.All."
+    Write-Warning "Tenant-wide compliance settings not readable ($($_.Exception.Message)). May require DeviceManagementServiceConfig.Read.All."
 }
 
 $filterNames = @{}
-foreach ($f in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/assignmentFilters" -Label 'Assignment Filters')) {
+foreach ($f in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/assignmentFilters" -Label 'Assignment filters')) {
     $filterNames[$f.id] = $f.displayName
 }
 
-# Vorlagennamen sind optional (eigene Berechtigung) – Fehler machen den Report nicht unvollständig
+# Template names are optional (separate permission) – errors do not make the report incomplete
 $templateNames = @{}
 try {
     foreach ($t in (Get-GraphAll -Uri "$graphBeta/deviceManagement/notificationMessageTemplates?`$select=id,displayName")) {
@@ -332,21 +352,21 @@ try {
     }
 }
 catch {
-    Write-Warning "Namen der Benachrichtigungsvorlagen nicht lesbar – es werden Vorlagen-IDs angezeigt. Benötigt ggf. DeviceManagementServiceConfig.Read.All."
+    Write-Warning "Notification template names not readable – template IDs are shown instead. May require DeviceManagementServiceConfig.Read.All."
 }
 #endregion
 
-#region Richtlinien laden
+#region Load policies
 $profiles = [System.Collections.Generic.List[object]]::new()
 
-# Klassische Compliance-Richtlinien
-foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/deviceCompliancePolicies?`$expand=assignments" -Label 'Compliance-Richtlinien (deviceCompliancePolicies)')) {
+# Compliance policies (classic)
+foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/deviceCompliancePolicies?`$expand=assignments" -Label 'Compliance policies (deviceCompliancePolicies)')) {
     $odata = $p.'@odata.type' -replace '^#microsoft\.graph\.', ''
     $profiles.Add([pscustomobject]@{
-        Typ         = 'Compliance'
-        Detailtyp   = $odata
+        Type        = 'Compliance'
+        DetailType  = $odata
         Name        = $p.displayName
-        Plattform   = Get-NormalizedPlatform $odata
+        Platform    = Get-NormalizedPlatform $odata
         Id          = $p.id
         Assignments = @($p.assignments)
         ActionsUrl  = "/deviceManagement/deviceCompliancePolicies/$($p.id)/scheduledActionsForRule?`$expand=scheduledActionConfigurations"
@@ -354,13 +374,13 @@ foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/deviceComplia
     })
 }
 
-# Compliance-Richtlinien auf Settings-Catalog-Basis (z. B. Linux)
-foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/compliancePolicies?`$expand=assignments" -Label 'Compliance-Richtlinien (compliancePolicies)')) {
+# Compliance policies based on the Settings Catalog (e.g. Linux)
+foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/compliancePolicies?`$expand=assignments" -Label 'Compliance policies (compliancePolicies)')) {
     $profiles.Add([pscustomobject]@{
-        Typ         = 'Compliance (Settings Catalog)'
-        Detailtyp   = @($p.technologies) -join ', '
+        Type        = 'Compliance (Settings Catalog)'
+        DetailType  = @($p.technologies) -join ', '
         Name        = $p.name
-        Plattform   = Get-NormalizedPlatform $p.platforms
+        Platform    = Get-NormalizedPlatform $p.platforms
         Id          = $p.id
         Assignments = @($p.assignments)
         ActionsUrl  = "/deviceManagement/compliancePolicies/$($p.id)/scheduledActionsForRule?`$expand=scheduledActionConfigurations"
@@ -368,91 +388,91 @@ foreach ($p in (Get-GraphAllSafe -Uri "$graphBeta/deviceManagement/compliancePol
     })
 }
 
-Write-Host "Richtlinien gefunden: $($profiles.Count)" -ForegroundColor Cyan
+Write-Host "Policies found: $($profiles.Count)" -ForegroundColor Cyan
 #endregion
 
-#region Aktionen bei Nichtkonformität per Batch laden
+#region Load actions for noncompliance via batch
 if ($profiles.Count -gt 0) {
     try {
         $actionResp = Invoke-GraphBatch -RelativeUrls @($profiles | ForEach-Object { $_.ActionsUrl }) -Version beta
     }
     catch {
-        $msg = "Aktionen bei Nichtkonformität konnten nicht geladen werden: $($_.Exception.Message)"
+        $msg = "Actions for noncompliance could not be loaded: $($_.Exception.Message)"
         Write-Warning $msg; $loadErrors.Add($msg)
         $actionResp = @{}
     }
     foreach ($p in $profiles) {
         $r = $actionResp[$p.ActionsUrl]
         if ($r -and $r.status -eq 200) {
-            # Alle Aktionen aller Regeln einer Richtlinie flach sammeln
+            # Collect all actions of all rules of a policy in one flat list
             $p.Actions = @(foreach ($rule in @($r.body.value)) {
                 foreach ($c in @($rule.scheduledActionConfigurations)) { if ($c) { $c } }
             })
         }
         elseif ($r) {
-            $msg = "Richtlinie '$($p.Name)': Aktionen nicht lesbar (HTTP $($r.status))"
+            $msg = "Policy '$($p.Name)': actions not readable (HTTP $($r.status))"
             Write-Warning $msg; $loadErrors.Add($msg)
         }
     }
 }
 #endregion
 
-#region Zuweisungen aufbereiten
+#region Build assignment rows
 $rows = foreach ($p in $profiles) {
     $assignments = @($p.Assignments | Where-Object { $_ })
 
     if ($assignments.Count -eq 0) {
         [pscustomobject]@{
-            Richtlinie = $p.Name; Typ = $p.Typ; Plattform = $p.Plattform; Detailtyp = $p.Detailtyp
-            Modus = '-'; Bereich = 'Keine'; Gruppe = '<nicht zugewiesen>'
-            Filter = $null; FilterModus = $null; NichtKonformNach = $null; Aktionen = $null
-            GruppenId = $null; RichtlinienId = $p.Id
+            Policy = $p.Name; Type = $p.Type; Platform = $p.Platform; DetailType = $p.DetailType
+            Mode = '-'; Scope = 'None'; Group = '<not assigned>'
+            Filter = $null; FilterMode = $null; NoncompliantAfter = $null; Actions = $null
+            GroupId = $null; PolicyId = $p.Id
         }
         continue
     }
 
     foreach ($a in $assignments) {
         $t = $a.target
-        $groupId = $null; $gruppe = $null; $bereich = 'Gruppe'
+        $groupId = $null; $group = $null; $scope = 'Group'
 
         switch ($t.'@odata.type') {
-            '#microsoft.graph.groupAssignmentTarget'            { $modus = 'Include'; $groupId = $t.groupId }
-            '#microsoft.graph.exclusionGroupAssignmentTarget'   { $modus = 'Exclude'; $groupId = $t.groupId }
-            '#microsoft.graph.allDevicesAssignmentTarget'       { $modus = 'Include'; $gruppe = 'Alle Geräte';   $bereich = 'Tenantweit' }
-            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $modus = 'Include'; $gruppe = 'Alle Benutzer'; $bereich = 'Tenantweit' }
-            default                                             { $modus = 'Unbekannt'; $gruppe = $t.'@odata.type'; $bereich = 'Unbekannt' }
+            '#microsoft.graph.groupAssignmentTarget'            { $mode = 'Include'; $groupId = $t.groupId }
+            '#microsoft.graph.exclusionGroupAssignmentTarget'   { $mode = 'Exclude'; $groupId = $t.groupId }
+            '#microsoft.graph.allDevicesAssignmentTarget'       { $mode = 'Include'; $group = 'All devices'; $scope = 'TenantWide' }
+            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $mode = 'Include'; $group = 'All users';   $scope = 'TenantWide' }
+            default                                             { $mode = 'Unknown'; $group = $t.'@odata.type'; $scope = 'Unknown' }
         }
 
         $filterId  = $t.deviceAndAppManagementAssignmentFilterId
         $hasFilter = $filterId -and $filterId -ne $emptyGuid
         $filter    = if (-not $hasFilter) { $null }
                      elseif ($filterNames.ContainsKey($filterId)) { $filterNames[$filterId] }
-                     else { "<Filter gelöscht/unbekannt: $filterId>" }
+                     else { "<filter deleted/unknown: $filterId>" }
 
         [pscustomobject]@{
-            Richtlinie       = $p.Name
-            Typ              = $p.Typ
-            Plattform        = $p.Plattform
-            Detailtyp        = $p.Detailtyp
-            Modus            = $modus
-            Bereich          = $bereich
-            Gruppe           = $gruppe
-            Filter           = $filter
-            FilterModus      = if ($hasFilter) { $t.deviceAndAppManagementAssignmentFilterType } else { $null }
-            NichtKonformNach = $null
-            Aktionen         = $null
-            GruppenId        = $groupId
-            RichtlinienId    = $p.Id
+            Policy            = $p.Name
+            Type              = $p.Type
+            Platform          = $p.Platform
+            DetailType        = $p.DetailType
+            Mode              = $mode
+            Scope             = $scope
+            Group             = $group
+            Filter            = $filter
+            FilterMode        = if ($hasFilter) { $t.deviceAndAppManagementAssignmentFilterType } else { $null }
+            NoncompliantAfter = $null
+            Actions           = $null
+            GroupId           = $groupId
+            PolicyId          = $p.Id
         }
     }
 }
 $rows = @($rows)
 #endregion
 
-#region Gruppennamen per Batch auflösen (Zuweisungen + CC-Gruppen der Benachrichtigungen)
+#region Resolve group names via batch (assignments + CC groups of notifications)
 $ccGroupIds = @($profiles | ForEach-Object { $_.Actions } | Where-Object { $_ } |
                 ForEach-Object { @($_.notificationMessageCCList) } | Where-Object { $_ })
-$groupIds   = @(@($rows | Where-Object { $_.GruppenId } | ForEach-Object { $_.GruppenId }) + $ccGroupIds |
+$groupIds   = @(@($rows | Where-Object { $_.GroupId } | ForEach-Object { $_.GroupId }) + $ccGroupIds |
                 Select-Object -Unique)
 
 $groupNames = @{}
@@ -462,46 +482,47 @@ if ($groupIds.Count -gt 0) {
         $groupResp = Invoke-GraphBatch -RelativeUrls $groupUrls -Version v1.0
     }
     catch {
-        $msg = "Gruppennamen konnten nicht aufgelöst werden: $($_.Exception.Message)"
+        $msg = "Group names could not be resolved: $($_.Exception.Message)"
         Write-Warning $msg; $loadErrors.Add($msg)
         $groupResp = @{}
     }
     foreach ($id in $groupIds) {
         $r = $groupResp["/groups/$id`?`$select=id,displayName"]
-        $groupNames[$id] = if     (-not $r)            { "<nicht aufgelöst: $id>" }
+        $groupNames[$id] = if     (-not $r)            { "<not resolved: $id>" }
                            elseif ($r.status -eq 200)  { $r.body.displayName }
-                           elseif ($r.status -eq 404)  { "<Gruppe gelöscht: $id>" }
-                           else                        { "<Fehler HTTP $($r.status): $id>" }
+                           elseif ($r.status -eq 404)  { "<group deleted: $id>" }
+                           else                        { "<error HTTP $($r.status): $id>" }
     }
     foreach ($row in $rows) {
-        if ($row.GruppenId) { $row.Gruppe = $groupNames[$row.GruppenId] }
+        if ($row.GroupId) { $row.Group = $groupNames[$row.GroupId] }
     }
 }
 #endregion
 
-#region Aktionen formatieren
+#region Format actions
 $actionText   = @{}
 $nonCompliant = @{}
 foreach ($p in $profiles) {
     if ($null -eq $p.Actions) {
-        $actionText[$p.Id]   = '<nicht lesbar>'
-        $nonCompliant[$p.Id] = '<nicht lesbar>'
+        $actionText[$p.Id]   = '<not readable>'
+        $nonCompliant[$p.Id] = '<not readable>'
         continue
     }
 
     $sorted = @($p.Actions | Sort-Object @{ Expression = { [int]$_.gracePeriodHours } },
-                                         @{ Expression = { $i = [array]::IndexOf($actionOrder, "$($_.actionType)"); if ($i -lt 0) { 99 } else { $i } } })
+                                         @{ Expression = { $k = "$($_.actionType)"; if ($actionRank.ContainsKey($k)) { $actionRank[$k] } else { 99 } } })
 
     $labels = foreach ($c in $sorted) {
         $type  = "$($c.actionType)"
         $label = if ($actionLabels.ContainsKey($type)) { $actionLabels[$type] } else { $type }
-        $text  = "${label}: $(Format-GracePeriod $c.gracePeriodHours)"
+        # "No action" has no meaningful timing
+        $text  = if ($type -eq 'noAction') { $label } else { "${label}: $(Format-GracePeriod $c.gracePeriodHours)" }
 
         $details = @()
         if ($c.notificationTemplateId -and $c.notificationTemplateId -ne $emptyGuid) {
             $tpl = if ($templateNames.ContainsKey($c.notificationTemplateId)) { $templateNames[$c.notificationTemplateId] }
                    else { $c.notificationTemplateId }
-            $details += "Vorlage: $tpl"
+            $details += "Template: $tpl"
         }
         $cc = @($c.notificationMessageCCList | Where-Object { $_ })
         if ($cc.Count -gt 0) {
@@ -511,82 +532,82 @@ foreach ($p in $profiles) {
         $text
     }
 
-    $actionText[$p.Id] = if ($labels) { @($labels) -join ' | ' } else { '<keine>' }
+    $actionText[$p.Id] = if ($labels) { @($labels) -join ' | ' } else { '<none>' }
 
     $block = @($sorted | Where-Object { "$($_.actionType)" -eq 'block' }) | Select-Object -First 1
-    $nonCompliant[$p.Id] = if ($block) { Format-GracePeriod $block.gracePeriodHours -Short } else { '<keine Aktion>' }
+    $nonCompliant[$p.Id] = if ($block) { Format-GracePeriod $block.gracePeriodHours -Short } else { '<no action>' }
 }
 
 foreach ($row in $rows) {
-    $row.Aktionen         = $actionText[$row.RichtlinienId]
-    $row.NichtKonformNach = $nonCompliant[$row.RichtlinienId]
+    $row.Actions           = $actionText[$row.PolicyId]
+    $row.NoncompliantAfter = $nonCompliant[$row.PolicyId]
 }
 #endregion
 
-#region Filtern
+#region Filter
 $filtered = $rows
 if ($GroupName) {
-    # Richtlinien ermitteln, die mindestens eine passende Zuweisung haben ...
+    # Determine policies with at least one matching assignment ...
     $matchingIds = @($rows | Where-Object {
-        ($_.Bereich -eq 'Gruppe' -and $_.Gruppe -like $GroupName) -or
-        ($IncludeTenantWide -and $_.Bereich -eq 'Tenantweit')
-    } | Select-Object -ExpandProperty RichtlinienId -Unique)
-    # ... und von diesen ALLE Zuweisungen behalten (Gesamtbild inkl. Excludes)
-    $filtered = $rows | Where-Object { $_.RichtlinienId -in $matchingIds }
+        ($_.Scope -eq 'Group' -and $_.Group -like $GroupName) -or
+        ($IncludeTenantWide -and $_.Scope -eq 'TenantWide')
+    } | Select-Object -ExpandProperty PolicyId -Unique)
+    # ... and keep ALL assignments of these policies (full picture incl. excludes)
+    $filtered = $rows | Where-Object { $_.PolicyId -in $matchingIds }
 }
 elseif (-not $IncludeUnassigned) {
-    $filtered = $rows | Where-Object { $_.Bereich -ne 'Keine' }
+    $filtered = $rows | Where-Object { $_.Scope -ne 'None' }
 }
 $filtered = @($filtered)
 
-$modusOrder = @{ Expression = { switch ($_.Modus) { 'Include' { 0 } 'Exclude' { 1 } default { 2 } } } }
+$modeOrder = @{ Expression = { switch ($_.Mode) { 'Include' { 0 } 'Exclude' { 1 } default { 2 } } } }
 #endregion
 
-#region Ergebnis aufbauen
+#region Build result
 if ($OneRowPerAssignment) {
-    # Eine Zeile pro Zuweisung (Rohdaten, z. B. für Pivot-Auswertungen)
-    $result = @($filtered | Sort-Object Richtlinie, RichtlinienId, $modusOrder, Gruppe |
-                Select-Object Richtlinie, Typ, Plattform, Detailtyp, Modus, Bereich, Gruppe, Filter, FilterModus,
-                              NichtKonformNach, Aktionen, GruppenId, RichtlinienId)
+    # One row per assignment (raw data, e.g. for pivot tables)
+    $result = @($filtered | Sort-Object Policy, PolicyId, $modeOrder, Group |
+                Select-Object Policy, Type, Platform, DetailType, Mode, Scope, Group, Filter, FilterMode,
+                              NoncompliantAfter, Actions, GroupId, PolicyId)
 }
 else {
-    # Eine Zeile pro Richtlinie, alle Zuweisungen in der Spalte "Gruppe" zusammengefasst
-    $result = @($filtered | Group-Object RichtlinienId | ForEach-Object {
-        $items = @($_.Group | Sort-Object $modusOrder, Gruppe)
+    # One row per policy, all assignments combined in the column "AssignedGroups"
+    $result = @($filtered | Group-Object PolicyId | ForEach-Object {
+        $items = @($_.Group | Sort-Object $modeOrder, Group)
         $first = $items[0]
 
         $labels = foreach ($i in $items) {
-            $label = if ($i.Modus -eq 'Exclude') { "Exclude: $($i.Gruppe)" } else { $i.Gruppe }
-            if ($i.Filter) { $label += " [Filter: $($i.Filter) ($($i.FilterModus))]" }
+            $label = if ($i.Mode -eq 'Exclude') { "Exclude: $($i.Group)" } else { $i.Group }
+            if ($i.Filter) { $label += " [Filter: $($i.Filter) ($($i.FilterMode))]" }
             $label
         }
 
         [pscustomobject]@{
-            Richtlinie       = $first.Richtlinie
-            Typ              = $first.Typ
-            Plattform        = $first.Plattform
-            Detailtyp        = $first.Detailtyp
-            Zuweisungen      = @($items | Where-Object { $_.Bereich -ne 'Keine' }).Count
-            Gruppe           = $labels -join ' | '
-            NichtKonformNach = $first.NichtKonformNach
-            Aktionen         = $first.Aktionen
-            GruppenIds       = @($items | Where-Object { $_.GruppenId } | ForEach-Object { $_.GruppenId }) -join ' | '
-            RichtlinienId    = $first.RichtlinienId
+            Policy            = $first.Policy
+            Type              = $first.Type
+            Platform          = $first.Platform
+            DetailType        = $first.DetailType
+            AssignmentCount   = @($items | Where-Object { $_.Scope -ne 'None' }).Count
+            AssignedGroups    = $labels -join ' | '
+            NoncompliantAfter = $first.NoncompliantAfter
+            Actions           = $first.Actions
+            GroupIds          = @($items | Where-Object { $_.GroupId } | ForEach-Object { $_.GroupId }) -join ' | '
+            PolicyId          = $first.PolicyId
         }
-    } | Sort-Object Richtlinie, RichtlinienId)
+    } | Sort-Object Policy, PolicyId)
 }
 #endregion
 
-#region Ausgabe
+#region Output
 if ($result.Count -eq 0) {
-    Write-Warning "Keine Zuweisungen gefunden, die den Kriterien entsprechen."
+    Write-Warning "No assignments found matching the criteria."
 }
 else {
     if ($OneRowPerAssignment) {
-        $result | Format-Table Richtlinie, Plattform, Modus, Gruppe, Filter, FilterModus, NichtKonformNach -AutoSize -Wrap | Out-Host
+        $result | Format-Table Policy, Platform, Mode, Group, Filter, FilterMode, NoncompliantAfter -AutoSize -Wrap | Out-Host
     }
     else {
-        $result | Format-Table Richtlinie, Plattform, Zuweisungen, Gruppe, NichtKonformNach -AutoSize -Wrap | Out-Host
+        $result | Format-Table Policy, Platform, AssignmentCount, AssignedGroups, NoncompliantAfter -AutoSize -Wrap | Out-Host
     }
 
     $exportDir = Split-Path -Path $ExportPath -Parent
@@ -594,14 +615,14 @@ else {
         New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
     }
     $encoding = if ($PSVersionTable.PSVersion.Major -ge 6) { 'utf8BOM' } else { 'UTF8' }
-    $result | Export-Csv -Path $ExportPath -Delimiter ';' -NoTypeInformation -Encoding $encoding
-    Write-Host "CSV exportiert: $ExportPath ($($result.Count) Zeilen)" -ForegroundColor Green
+    $result | Export-Csv -Path $ExportPath -Delimiter $Delimiter -NoTypeInformation -Encoding $encoding
+    Write-Host "CSV exported: $ExportPath ($($result.Count) rows)" -ForegroundColor Green
 
-    if ($GridView) { $result | Out-GridView -Title 'Intune Compliance-Richtlinien – Zuweisungen' }
+    if ($GridView) { $result | Out-GridView -Title 'Intune compliance policies – assignments' }
 }
 
 if ($loadErrors.Count -gt 0) {
-    Write-Warning "Der Report ist UNVOLLSTÄNDIG – $($loadErrors.Count) Fehler beim Laden:"
+    Write-Warning "The report is INCOMPLETE – $($loadErrors.Count) error(s) while loading:"
     $loadErrors | ForEach-Object { Write-Warning "  $_" }
 }
 
