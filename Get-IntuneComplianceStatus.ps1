@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.3
+    Version:  1.1.4
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -432,11 +432,21 @@ $settingLabels = @{
     'DeviceCompliancePolicyScript'               = 'Benutzerdefinierte Compliance (Skript)'
 }
 
+# Longest keys first, so e.g. "PasswordRequiredType" wins over "PasswordRequired" in the suffix match
+$settingLabelKeys = @($settingLabels.Keys | Sort-Object { $_.Length } -Descending)
+
 function Get-SettingLabel {
     param([string]$Setting, [string]$SettingName)
     foreach ($candidate in $Setting, $SettingName) {
-        $key = ("$candidate" -split '\.')[-1]
-        if ($key -and $settingLabels.ContainsKey($key)) { return $settingLabels[$key] }
+        if (-not $candidate) { continue }
+        # Usual form: "Windows10CompliancePolicy.BitLockerEnabled" -> last segment
+        $key = ($candidate -split '\.')[-1]
+        if ($settingLabels.ContainsKey($key)) { return $settingLabels[$key] }
+        # Graph does not always separate the policy type with a dot
+        # ("Windows10CompliancePolicyBitLockerEnabled") -> match the known names as suffix
+        foreach ($k in $settingLabelKeys) {
+            if ($candidate.EndsWith($k, [StringComparison]::OrdinalIgnoreCase)) { return $settingLabels[$k] }
+        }
     }
     if ($SettingName) { return $SettingName }
     if ($Setting)     { return $Setting }
@@ -946,7 +956,7 @@ a{color:var(--accent)}
           if (s.errorCode) parts.push('Fehlercode: ' + s.errorCode);
           if (s.error) parts.push(s.error);
           row.appendChild(el('div', 's-detail', parts.join(' · ')));
-          if (s.raw && s.raw !== s.name) row.appendChild(el('div', 's-detail', s.raw));
+          if (s.raw && s.raw !== s.name) row.appendChild(el('div', 's-detail', 'Technischer Name: ' + s.raw));
           box.appendChild(row);
         });
         if (p.note) box.appendChild(el('div', 'note', p.note));
