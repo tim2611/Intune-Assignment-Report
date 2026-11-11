@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.6
+    Version:  1.1.7
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -548,11 +548,19 @@ function Get-SettingFallbackCore {
 function Merge-PolicyResults {
     <#
       deviceCompliancePolicyStates returns one entry per policy AND user on the device (enrolled user,
-      other signed-in users, system account). Merge them by policy name so that every policy appears
-      once: failing if any entry fails, settings de-duplicated by setting id / current value / error code.
+      other signed-in users, system account). Merge them so that every policy appears once: failing if
+      any entry fails, settings de-duplicated by setting id / current value / error code.
+      Key: the policy id if it is a plain GUID (then it is the policy id itself and identical for all user
+      entries – the fallback report accepts it as PolicyId), otherwise the policy name. Names are not a
+      reliable key on their own: Intune allows several policies with the same name.
     #>
     param([object[]]$Results)
-    foreach ($g in @($Results | Where-Object { $_ } | Group-Object { "$($_['name'])".ToLowerInvariant() })) {
+    $groupKey = {
+        $id = "$($_['id'])"
+        if ($id -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { "id:$($id.ToLowerInvariant())" }
+        else { "name:$("$($_['name'])".ToLowerInvariant())" }
+    }
+    foreach ($g in @($Results | Where-Object { $_ } | Group-Object $groupKey)) {
         $items   = @($g.Group)
         $failing = @($items | Where-Object { $_['failing'] })
         $base    = if ($failing.Count -gt 0) { $failing[0] } else { $items[0] }
@@ -567,6 +575,7 @@ function Merge-PolicyResults {
         })
 
         [ordered]@{
+            id       = $base['id']
             name     = $base['name']
             state    = $base['state']
             failing  = $failing.Count -gt 0
@@ -601,6 +610,7 @@ function ConvertTo-PolicyResult {
     }
 
     [ordered]@{
+        id       = "$($State.id)"
         name     = if ($State.displayName) { "$($State.displayName)" } else { "$($State.id)" }
         state    = "$($State.state)"
         failing  = $failing
