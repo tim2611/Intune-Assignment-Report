@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.1
+    Version:  1.1.2
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -1041,8 +1041,6 @@ if ($problems.Count -gt 0) {
     $problems | Format-Table DeviceName, User, Status, Reasons -AutoSize -Wrap | Out-Host
 }
 
-Write-Host "HTML report: $OutputPath" -ForegroundColor Green
-
 if ($CsvPath) {
     $CsvPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CsvPath)
     $csvDir = Split-Path -Path $CsvPath -Parent
@@ -1051,7 +1049,6 @@ if ($CsvPath) {
     $result | Select-Object DeviceName, User, UPN, OS, OSVersion, Manufacturer, Model, SerialNumber, ComplianceState, Status,
                             LastSync, GraceUntil, Reasons, DeviceId |
         Export-Csv -Path $CsvPath -Delimiter $Delimiter -NoTypeInformation -Encoding $encoding
-    Write-Host "CSV exported: $CsvPath ($($result.Count) rows)" -ForegroundColor Green
 }
 
 if ($loadErrors.Count -gt 0) {
@@ -1059,6 +1056,18 @@ if ($loadErrors.Count -gt 0) {
     $loadErrors | ForEach-Object { Write-Warning "  $_" }
 }
 
-if ($Open) { Invoke-Item -Path $OutputPath }
+# Saved files last, so they are not scrolled away by the table or warnings
+Write-Host ""
+Write-Host "Report saved" -ForegroundColor Cyan
+Write-Host "  HTML: $OutputPath" -ForegroundColor Green
+if ($CsvPath) {
+    Write-Host "  CSV:  $CsvPath ($($result.Count) rows)" -ForegroundColor Green
+}
+if ($Open) {
+    Invoke-Item -Path $OutputPath
+}
+else {
+    Write-Host "  Open: Invoke-Item '$OutputPath'   (or run the script with -Open)" -ForegroundColor Gray
+}
 if ($PassThru) { $result }
 #endregion
