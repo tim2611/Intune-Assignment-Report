@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.4
+    Version:  1.1.5
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -382,54 +382,58 @@ function Get-StatusClass {
 
 # German display names for common compliance settings (key = last segment of the setting id,
 # lookup is case-insensitive). Unknown settings fall back to the name Graph returns.
+# Wording rule: every label names the REQUIREMENT ("... erforderlich", "... muss ...", "... nicht zulässig").
+# Labels are only shown for settings the device fails, so the reader sees which requirement is not met.
+# Never phrase a label as a state ("Signaturen aktuell") – under "Warum nicht compliant?" that reads as OK.
+# The setting state (nicht compliant / Fehler / Konflikt) is shown separately next to it.
 $settingLabels = @{
     # Default Device Compliance Policy (built-in)
-    'RequireDeviceCompliancePolicyAssigned'      = 'Keine Compliance-Richtlinie zugewiesen'
-    'RequireRemainContact'                       = 'Gerät hat sich nicht innerhalb der Gültigkeitsdauer gemeldet'
-    'RequireUserExistence'                       = 'Registrierter Benutzer existiert nicht (mehr)'
+    'RequireDeviceCompliancePolicyAssigned'      = 'Compliance-Richtlinie muss zugewiesen sein'
+    'RequireRemainContact'                       = 'Gerät muss sich innerhalb der Gültigkeitsdauer melden'
+    'RequireUserExistence'                       = 'Registrierter Benutzer muss existieren'
     # Windows – Device Health
     'BitLockerEnabled'                           = 'BitLocker erforderlich'
     'SecureBootEnabled'                          = 'Secure Boot erforderlich'
     'CodeIntegrityEnabled'                       = 'Codeintegrität erforderlich'
     'EarlyLaunchAntiMalwareDriverEnabled'        = 'ELAM-Treiber erforderlich'
     # Device properties
-    'OsMinimumVersion'                           = 'Minimale Betriebssystemversion'
-    'OsMaximumVersion'                           = 'Maximale Betriebssystemversion'
-    'MobileOsMinimumVersion'                     = 'Minimale Betriebssystemversion (mobil)'
-    'MobileOsMaximumVersion'                     = 'Maximale Betriebssystemversion (mobil)'
-    'MinAndroidSecurityPatchLevel'               = 'Minimale Android-Sicherheitspatchebene'
-    'OsMinimumBuildVersion'                      = 'Minimale Build-Version'
-    'OsMaximumBuildVersion'                      = 'Maximale Build-Version'
+    'OsMinimumVersion'                           = 'Mindestversion des Betriebssystems erforderlich'
+    'OsMaximumVersion'                           = 'Höchstversion des Betriebssystems darf nicht überschritten werden'
+    'MobileOsMinimumVersion'                     = 'Mindestversion des Betriebssystems (mobil) erforderlich'
+    'MobileOsMaximumVersion'                     = 'Höchstversion des Betriebssystems (mobil) darf nicht überschritten werden'
+    'MinAndroidSecurityPatchLevel'               = 'Mindest-Sicherheitspatchebene (Android) erforderlich'
+    'OsMinimumBuildVersion'                      = 'Mindest-Build-Version erforderlich'
+    'OsMaximumBuildVersion'                      = 'Höchst-Build-Version darf nicht überschritten werden'
     # System security
-    'StorageRequireEncryption'                   = 'Verschlüsselung des Datenspeichers'
+    'StorageRequireEncryption'                   = 'Verschlüsselung des Datenspeichers erforderlich'
     'ActiveFirewallRequired'                     = 'Firewall erforderlich'
     'FirewallEnabled'                            = 'Firewall erforderlich'
     'TpmRequired'                                = 'TPM erforderlich'
     'AntivirusRequired'                          = 'Antivirus erforderlich'
     'AntiSpywareRequired'                        = 'Antispyware erforderlich'
-    'DefenderEnabled'                            = 'Microsoft Defender Antimalware'
-    'DefenderVersion'                            = 'Minimale Version Defender Antimalware'
-    'SignatureOutOfDate'                         = 'Defender-Signaturen aktuell'
-    'RtpEnabled'                                 = 'Echtzeitschutz'
-    'ConfigurationManagerComplianceRequired'     = 'Compliance aus Configuration Manager'
+    'DefenderEnabled'                            = 'Microsoft Defender Antimalware erforderlich'
+    'DefenderVersion'                            = 'Mindestversion von Defender Antimalware erforderlich'
+    'SignatureOutOfDate'                         = 'Defender-Signaturen müssen aktuell sein'
+    'RtpEnabled'                                 = 'Echtzeitschutz erforderlich'
+    'ConfigurationManagerComplianceRequired'     = 'Compliance aus Configuration Manager erforderlich'
     'PasswordRequired'                           = 'Kennwort erforderlich'
-    'PasswordMinimumLength'                      = 'Minimale Kennwortlänge'
-    'PasswordRequiredType'                       = 'Kennworttyp'
-    'PasswordMinutesOfInactivityBeforeLock'      = 'Sperre nach Inaktivität'
-    'PasswordExpirationDays'                     = 'Kennwortablauf'
-    'PasswordPreviousPasswordBlockCount'         = 'Kennwortverlauf'
-    'PasswordBlockSimple'                        = 'Einfache Kennwörter blockieren'
+    'PasswordMinimumLength'                      = 'Mindestlänge des Kennworts erforderlich'
+    'PasswordRequiredType'                       = 'Kennworttyp muss den Vorgaben entsprechen'
+    'PasswordMinutesOfInactivityBeforeLock'      = 'Sperre nach Inaktivität erforderlich'
+    'PasswordExpirationDays'                     = 'Kennwortablauf muss eingehalten werden'
+    'PasswordPreviousPasswordBlockCount'         = 'Kennwortverlauf muss eingehalten werden'
+    'PasswordBlockSimple'                        = 'Einfache Kennwörter nicht zulässig'
     'PasscodeRequired'                           = 'Kennung erforderlich'
-    'SecurityBlockJailbrokenDevices'             = 'Gerät mit Jailbreak/Root blockiert'
-    'SecurityPreventInstallAppsFromUnknownSources' = 'Apps aus unbekannten Quellen blockiert'
-    'SecurityRequireSafetyNetAttestationBasicIntegrity' = 'Play Integrity: Basisintegrität'
-    'SecurityRequireSafetyNetAttestationCertifiedDevice' = 'Play Integrity: zertifiziertes Gerät'
-    'SystemIntegrityProtectionEnabled'           = 'System Integrity Protection (macOS)'
-    'GatekeeperAllowedAppSource'                 = 'Gatekeeper'
+    'SecurityBlockJailbrokenDevices'             = 'Gerät mit Jailbreak/Root nicht zulässig'
+    'SecurityPreventInstallAppsFromUnknownSources' = 'Apps aus unbekannten Quellen nicht zulässig'
+    'SecurityRequireSafetyNetAttestationBasicIntegrity' = 'Play Integrity: Basisintegrität erforderlich'
+    'SecurityRequireSafetyNetAttestationCertifiedDevice' = 'Play Integrity: zertifiziertes Gerät erforderlich'
+    'SystemIntegrityProtectionEnabled'           = 'System Integrity Protection (macOS) erforderlich'
+    'GatekeeperAllowedAppSource'                 = 'Gatekeeper-Vorgabe muss eingehalten werden'
     # Defender for Endpoint / Mobile Threat Defense
-    'DeviceThreatProtectionEnabled'              = 'Bedrohungsschutz (Mobile Threat Defense)'
-    'DeviceThreatProtectionRequiredSecurityLevel' = 'Maximal zulässige Gerätebedrohungsstufe'
-    'DeviceCompliancePolicyScript'               = 'Benutzerdefinierte Compliance (Skript)'
+    'DeviceThreatProtectionEnabled'              = 'Bedrohungsschutz (Mobile Threat Defense) erforderlich'
+    'DeviceThreatProtectionRequiredSecurityLevel' = 'Zulässige Gerätebedrohungsstufe darf nicht überschritten werden'
+    'DeviceCompliancePolicyScript'               = 'Benutzerdefinierte Compliance (Skript) muss erfüllt sein'
 }
 
 # Longest keys first, so e.g. "PasswordRequiredType" wins over "PasswordRequired" in the suffix match
