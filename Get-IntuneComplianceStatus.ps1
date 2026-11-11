@@ -1067,7 +1067,8 @@ if ($Open) {
     Invoke-Item -Path $OutputPath
 }
 else {
-    Write-Host "  Open: Invoke-Item '$OutputPath'   (or run the script with -Open)" -ForegroundColor Gray
+    # Single quotes inside a single-quoted string must be doubled, so the line stays copy-paste-safe
+    Write-Host "  Open: Invoke-Item '$($OutputPath.Replace("'", "''"))'   (or run the script with -Open)" -ForegroundColor Gray
 }
 if ($PassThru) { $result }
 #endregion
