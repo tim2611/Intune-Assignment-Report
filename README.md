@@ -1,11 +1,12 @@
 # Intune Assignment Report
 
-PowerShell reports for Microsoft Intune that show **which policies are assigned to which groups** – including include/exclude assignments, tenant-wide assignments and assignment filters – via Microsoft Graph.
+PowerShell reports for Microsoft Intune that show **which policies are assigned to which groups** – including include/exclude assignments, tenant-wide assignments and assignment filters – and **why devices are not compliant**, via Microsoft Graph.
 
 | Script | Covers | Status |
 |---|---|---|
 | [`Get-IntuneConfigAssignments.ps1`](Get-IntuneConfigAssignments.ps1) | Configuration profiles | ✅ Available |
 | [`Get-IntuneComplianceAssignments.ps1`](#get-intunecomplianceassignmentsps1) | Compliance policies incl. actions for noncompliance | ✅ Available |
+| [`Get-IntuneComplianceStatus.ps1`](#get-intunecompliancestatusps1) | Compliance state per device incl. reasons, as HTML tile report | ✅ Available |
 
 > **CSV format:** UTF-8 with BOM, delimiter `;` by default (opens directly in Excel with German/European regional settings). Use `-Delimiter ','` for English regional settings.
 
@@ -32,7 +33,7 @@ PowerShell reports for Microsoft Intune that show **which policies are assigned 
 - Resolves group names and assignment filter names; flags **deleted groups and filters**
 - **"Which policies hit this group?"** via `-GroupName` (wildcards supported), optionally including policies assigned to *All devices* / *All users* (`-IncludeTenantWide`)
 - Finds **unassigned policies** (`-IncludeUnassigned`)
-- Group names and legacy intent assignments resolved via **JSON batching** (`$batch`) with retry on throttling (429/503/504)
+- Group names and legacy intent assignments resolved via **JSON batching** (`$batch`) with retry on throttling (429/503/504); if one batch chunk still fails, the remaining chunks continue
 - **Fault-tolerant:** if one policy type cannot be read, the report still completes and is clearly marked as incomplete
 - Works with **delegated** and **app-only** authentication; `-TenantId` for multi-tenant admins
 
@@ -92,7 +93,7 @@ Disconnect-MgGraph
 
 | Parameter | Description |
 |---|---|
-| `-TenantId` | Tenant ID or primary domain. Reconnects if the current session belongs to another tenant. |
+| `-TenantId` | Tenant ID or any verified domain of the tenant (resolved to the tenant ID). Reconnects if the current session belongs to another tenant; an existing app-only connection to another tenant aborts the run. |
 | `-GroupName` | Only policies with a direct assignment to a matching group (wildcards). Shows **all** assignments of these policies. Nested group membership is not resolved. |
 | `-IncludeTenantWide` | With `-GroupName`: also include policies assigned to *All devices* / *All users*. |
 | `-IncludeUnassigned` | Also list policies without assignments (no effect with `-GroupName`). |
@@ -169,6 +170,86 @@ Default export path: `%TEMP%\Intune-ComplianceAssignments_<timestamp>.csv`
 
 - The built-in *Default Device Compliance Policy* is not exposed via Graph and therefore not listed.
 - Only direct assignments are evaluated (no nested groups).
+
+---
+
+## Get-IntuneComplianceStatus.ps1
+
+Shows the **compliance state of every managed device** and – for devices that are not compliant – **which policy and which setting** caused it. The result is a self-contained **HTML tile report** (one tile per device) plus optional CSV.
+
+### What it covers
+
+| Data | Graph endpoint (beta) |
+|---|---|
+| Devices incl. compliance state | `/deviceManagement/managedDevices` |
+| Policy and setting states per device | `/deviceManagement/managedDevices/{id}/deviceCompliancePolicyStates` |
+| Fallback if a policy reports no setting details | `POST /deviceManagement/reports/getDevicePolicySettingsComplianceReport` |
+
+### HTML report
+
+- **One tile per device:** device name, user, OS and a status label
+  🟢 Compliant · 🔴 Not compliant (noncompliant, error, conflict) · 🟠 In grace period · ⚪ Unknown / not evaluated
+- **Click on a tile:** device details, the failing compliance policies and settings with current value and error code, the other evaluated policies, and a link to the device in the Intune admin center
+- Summary tiles as filters, full-text search (device, user, serial number, reason)
+- Labels in German; light and dark mode; no external resources, so the file can be sent by mail
+- Active filters and load errors are shown in the report header
+
+### Interactive filters
+
+If `-DeviceName` / `-OperatingSystem` are not passed, the script asks for them **before the sign-in**:
+
+```text
+Device name filter (wildcards * and ?, text without wildcard = 'contains', Enter = all): WS
+
+Which operating systems should be included?
+  [1] Windows
+  [2] iOS (incl. iPadOS)
+  [3] Android
+  [4] macOS
+  [5] Linux
+Selection, e.g. 1,3 or Windows,iOS (Enter = all): 1,2
+```
+
+No prompts with `-NoPrompt`, with an existing app-only connection, or in non-interactive hosts (scheduled tasks, Azure Automation, `pwsh -NonInteractive`). If a host cannot read input, the run continues without filter.
+
+### Permissions
+
+`DeviceManagementManagedDevices.Read.All` (or `DeviceManagementManagedDevices.ReadWrite.All`), delegated or application.
+
+### Usage
+
+```powershell
+# Interactive: asks for filters, opens the report in the browser
+.\Get-IntuneComplianceStatus.ps1 -TenantId contoso.onmicrosoft.com -Open
+
+# Only Windows devices that are not compliant, additionally as CSV
+.\Get-IntuneComplianceStatus.ps1 -OperatingSystem Windows -OnlyNonCompliant -CsvPath C:\Reports\noncompliant.csv
+
+# Automation: no prompts, all devices
+.\Get-IntuneComplianceStatus.ps1 -NoPrompt -OutputPath C:\Reports\compliance.html
+```
+
+### Parameters
+
+| Parameter | Description |
+|---|---|
+| `-TenantId` | Tenant ID or any verified domain of the tenant. |
+| `-DeviceName` | Name filter. Wildcards `*` and `?`; text without wildcard means *contains* (`WS` → `*WS*`). |
+| `-OperatingSystem` | `Windows`, `iOS` (incl. iPadOS), `Android`, `macOS`, `Linux` – one or more. |
+| `-OnlyNonCompliant` | Only devices that are not compliant. |
+| `-IncludeCompliantDetails` | Also load policy states for compliant devices (one extra request per device). |
+| `-OutputPath` | HTML path. Default: `<TEMP>\Intune-ComplianceStatus_<timestamp>.html`. |
+| `-CsvPath` | Additionally export one row per device incl. reasons. |
+| `-Delimiter` | CSV delimiter: `;` (default), `,` or tab. |
+| `-Open` | Open the HTML report when finished. |
+| `-NoPrompt` | Never ask for filters. |
+| `-PassThru` | Return the result objects to the pipeline. |
+
+### Limitations
+
+- Setting details come from Graph beta. If Graph reports a policy as noncompliant without setting details, the script tries the reporting API of the admin center; its column layout is undocumented. If that returns nothing usable, the tile shows the policy with a hint to check the device in the admin center.
+- Details are loaded only for devices that are not compliant (unless `-IncludeCompliantDetails`).
+- The report contains device names, UPNs and serial numbers – handle it like any other tenant export.
 
 ---
 

@@ -32,7 +32,7 @@
     for Mode, Filter and FilterMode.
 
 .PARAMETER TenantId
-    Optional: tenant ID or primary domain. Forces the connection to exactly this tenant
+    Optional: tenant ID or any verified domain of the tenant. Forces the connection to exactly this tenant
     (important for multi-tenant admins / guest accounts).
 
 .PARAMETER GroupName
@@ -82,7 +82,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.0
+    Version:  1.1.1
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -128,9 +128,29 @@ function Get-MissingScopes {
     return @($missing)
 }
 
+function Resolve-TenantGuid {
+    # -TenantId may be a GUID or a domain; Get-MgContext always returns the GUID.
+    # Domains are resolved anonymously via the OpenID configuration of the tenant.
+    param([string]$Tenant)
+    $g = [guid]::Empty
+    if ([guid]::TryParse($Tenant, [ref]$g)) { return $g.ToString() }
+    try {
+        $cfg = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$([uri]::EscapeDataString($Tenant))/v2.0/.well-known/openid-configuration" -ErrorAction Stop
+        if ("$($cfg.issuer)" -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { return $Matches[1].ToLower() }
+    }
+    catch { }
+    return $null
+}
+
+$tenantGuid = $null
+if ($TenantId) {
+    $tenantGuid = Resolve-TenantGuid $TenantId
+    if (-not $tenantGuid) { Write-Warning "Tenant '$TenantId' could not be resolved to a tenant ID – the existing connection is not checked against it." }
+}
+
 $ctx         = Get-MgContext
 $isAppOnly   = $ctx -and ("$($ctx.AuthType)" -eq 'AppOnly')
-$wrongTenant = $ctx -and $TenantId -and ($ctx.TenantId -ne $TenantId)
+$wrongTenant = $ctx -and $tenantGuid -and ("$($ctx.TenantId)" -ne $tenantGuid)
 
 if ($isAppOnly) {
     if ($wrongTenant) {
@@ -196,7 +216,9 @@ function Invoke-GraphBatch {
     <#
       Runs GET requests via JSON batching (max. 20 per call).
       Single 429/503/504 responses inside a batch are retried up to 3 times honoring Retry-After,
-      as are 5xx/transport errors of the batch POST itself. Status 0 = batch POST never succeeded.
+      as are 429/5xx/transport errors of the batch POST itself. If the POST of one chunk still fails,
+      its requests get status 0 and the remaining chunks continue (results already loaded are kept).
+      4xx errors of the POST itself (e.g. 401/403) abort immediately – they would hit every chunk.
       Returns: hashtable relativeUrl -> response object (status, body).
     #>
     param(
@@ -225,7 +247,11 @@ function Invoke-GraphBatch {
             catch {
                 $code = $null
                 if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
-                if ($attempt -eq $maxAttempts -or ($code -and $code -lt 500 -and $code -ne 429)) { throw }
+                if ($code -and $code -lt 500 -and $code -ne 429) { throw }
+                if ($attempt -eq $maxAttempts) {
+                    Write-Warning "Batch request failed after $maxAttempts attempts: $($_.Exception.Message)"
+                    break
+                }
                 Start-Sleep -Seconds (5 * $attempt)
                 continue
             }

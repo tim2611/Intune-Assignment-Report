@@ -1,6 +1,7 @@
 # Report exports – may contain tenant data
 *.csv
 *.xlsx
+*.html
 
 # OS / editor
 .DS_Store
