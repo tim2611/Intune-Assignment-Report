@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.5
+    Version:  1.1.6
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -459,7 +459,19 @@ function Get-SettingLabel {
 
 $failStates = @('nonCompliant', 'error', 'conflict')
 
+# Policy states come once per user on the device -> the same device/policy would be queried several times
+$fallbackCache = @{}
+
 function Get-SettingFallback {
+    param([string]$DeviceId, [string]$PolicyId)
+    $key = "$DeviceId|$PolicyId"
+    if (-not $script:fallbackCache.ContainsKey($key)) {
+        $script:fallbackCache[$key] = @(Get-SettingFallbackCore -DeviceId $DeviceId -PolicyId $PolicyId)
+    }
+    $script:fallbackCache[$key]
+}
+
+function Get-SettingFallbackCore {
     <#
       Fallback for policies that are reported as noncompliant without setting details:
       the reporting API behind the admin center view "device > device compliance > policy".
@@ -529,6 +541,37 @@ function Get-SettingFallback {
             current   = if ($valueCol -and "$($row[$valueCol])") { "$($row[$valueCol])" } else { $null }
             errorCode = $err
             error     = $null
+        }
+    }
+}
+
+function Merge-PolicyResults {
+    <#
+      deviceCompliancePolicyStates returns one entry per policy AND user on the device (enrolled user,
+      other signed-in users, system account). Merge them by policy name so that every policy appears
+      once: failing if any entry fails, settings de-duplicated by setting id / current value / error code.
+    #>
+    param([object[]]$Results)
+    foreach ($g in @($Results | Where-Object { $_ } | Group-Object { "$($_['name'])".ToLowerInvariant() })) {
+        $items   = @($g.Group)
+        $failing = @($items | Where-Object { $_['failing'] })
+        $base    = if ($failing.Count -gt 0) { $failing[0] } else { $items[0] }
+
+        $seen     = @{}
+        $settings = @(foreach ($i in $items) {
+            foreach ($s in @($i['settings'])) {
+                if (-not $s) { continue }
+                $k = "$($s['raw'])|$($s['current'])|$($s['errorCode'])".ToLowerInvariant()
+                if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $s }
+            }
+        })
+
+        [ordered]@{
+            name     = $base['name']
+            state    = $base['state']
+            failing  = $failing.Count -gt 0
+            settings = $settings
+            note     = if ($settings.Count -eq 0) { @($items | ForEach-Object { $_['note'] } | Where-Object { $_ }) | Select-Object -First 1 } else { $null }
         }
     }
 }
@@ -629,9 +672,9 @@ $result = @(foreach ($d in $devices) {
     $loaded   = $policyStates.ContainsKey($d.id)
     $policies = @()
     if ($loaded) {
-        $policies = @($policyStates[$d.id] |
-                      ForEach-Object { ConvertTo-PolicyResult -State $_ -DeviceId $d.id } |
-                      Sort-Object { -not $_['failing'] }, { $_['name'] })
+        $converted = @($policyStates[$d.id] | ForEach-Object { ConvertTo-PolicyResult -State $_ -DeviceId $d.id })
+        $policies  = @(Merge-PolicyResults -Results $converted |
+                       Sort-Object { -not $_['failing'] }, { $_['name'] })
     }
 
     $reasons = @(foreach ($p in @($policies | Where-Object { $_['failing'] })) {
@@ -783,7 +826,9 @@ a{color:var(--accent)}
   var LABEL = { compliant: 'Compliant', noncompliant: 'Nicht compliant', grace: 'Karenzzeit', unknown: 'Unbekannt' };
   var STATE = { compliant: 'Compliant', noncompliant: 'Nicht compliant', error: 'Fehler', conflict: 'Konflikt',
                 notapplicable: 'Nicht anwendbar', unknown: 'Unbekannt', ingraceperiod: 'Karenzzeit',
-                notassigned: 'Nicht zugewiesen', remediated: 'Korrigiert', configmanager: 'Configuration Manager' };
+                notassigned: 'Nicht zugewiesen', remediated: 'Korrigiert', configmanager: 'Configuration Manager',
+                notcompliant: 'Nicht compliant', nichtkonform: 'Nicht compliant', konform: 'Compliant',
+                fehler: 'Fehler', konflikt: 'Konflikt', nichtanwendbar: 'Nicht anwendbar' };
   var filter = 'all';
   var query = '';
 
@@ -793,7 +838,12 @@ a{color:var(--accent)}
     if (text !== undefined && text !== null) e.textContent = text;
     return e;
   }
-  function stateText(s) { var k = String(s || '').toLowerCase(); return STATE[k] || s || '–'; }
+  // Normalized key: lower case without blanks/dashes, so "nonCompliant", "Not compliant" (reporting API)
+  // and "Nicht konform" all map to the same German text
+  function stateText(s) {
+    var k = String(s || '').toLowerCase().replace(/[\s_-]/g, '');
+    return STATE[k] || s || '–';
+  }
   function fmtDate(v) {
     if (!v) return '–';
     var d = new Date(v);
