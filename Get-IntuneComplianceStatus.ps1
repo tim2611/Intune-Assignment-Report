@@ -93,7 +93,7 @@
 
 .NOTES
     Author:   Timo Schlappinger
-    Version:  1.1.2
+    Version:  1.1.3
     Project:  https://github.com/tim2611/Intune-Assignment-Report
     Requires: Module Microsoft.Graph.Authentication, PowerShell 5.1 or 7.x
 #>
@@ -114,6 +114,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-MgGraphRequest / Invoke-RestMethod write a progress record for every request. In many terminals
+# (VS Code, Windows Terminal) these leave blocks behind between the output lines and they slow the requests
+# down. Only affects this script's scope.
+$ProgressPreference    = 'SilentlyContinue'
 $graphBeta  = 'https://graph.microsoft.com/beta'
 $loadErrors = [System.Collections.Generic.List[string]]::new()
 $osOptions  = @('Windows', 'iOS', 'Android', 'macOS', 'Linux')   # keep in sync with ValidateSet of -OperatingSystem and $osPattern
